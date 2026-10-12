@@ -1,0 +1,5 @@
+numpy>=1.22
+pandas>=1.4
+opencv-python-headless>=4.5
+nibabel>=4.0
+pydicom>=2.3
