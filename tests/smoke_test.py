@@ -40,7 +40,8 @@ N_VERMIS_SAMPLES = 15
 IMAGE_SIZE = 224
 SPACING_X_MM = 0.12   # horizontal (columns), deliberately anisotropic
 SPACING_Y_MM = 0.10   # vertical (rows)
-HEIGHT_TOLERANCE = 0.10   # relative error allowed for the measured vermis height
+HEIGHT_MEAN_TOLERANCE = 0.05   # mean relative error allowed for the measured vermis height
+HEIGHT_MAX_TOLERANCE = 0.15    # relative error allowed for any single case
 MAX_HD95_MM = 1.5          # same cutoff as run_pipeline.sh
 MIN_MEASURED_FRACTION = 0.8
 
@@ -385,10 +386,10 @@ def check_measurements(stage: str, variant: str, summ, truth: dict) -> None:
         return
     rel_err = (valid["trimmed_mean_mm"] - valid["truth_mm"]).abs() / valid["truth_mm"]
     mae = (valid["trimmed_mean_mm"] - valid["truth_mm"]).abs().mean()
-    report(stage, "06 height vs. known height" + variant,
-           "PASS" if rel_err.max() <= HEIGHT_TOLERANCE and len(valid) >= MIN_MEASURED_FRACTION * N_VERMIS_SAMPLES
-           else "FAIL",
-           f"n={len(valid)}, MAE {mae:.2f} mm, max rel. error {rel_err.max():.1%} "
+    ok = (rel_err.mean() <= HEIGHT_MEAN_TOLERANCE and rel_err.max() <= HEIGHT_MAX_TOLERANCE
+          and len(valid) >= MIN_MEASURED_FRACTION * N_VERMIS_SAMPLES)
+    report(stage, "06 height vs. known height" + variant, "PASS" if ok else "FAIL",
+           f"n={len(valid)}, MAE {mae:.2f} mm, mean rel. error {rel_err.mean():.1%}, max {rel_err.max():.1%} "
            f"(truth {valid['truth_mm'].min():.1f}-{valid['truth_mm'].max():.1f} mm)")
 
 
@@ -412,14 +413,17 @@ def main():
         shutil.rmtree(work)
     work.mkdir(parents=True, exist_ok=True)
     print(f"Working directory: {work}\n")
-    rng = np.random.default_rng(args.seed)
+    # One generator per stage, so a stage's synthetic data does not depend
+    # on which other stages ran before it.
+    def rng(stage_index: int) -> np.random.Generator:
+        return np.random.default_rng([args.seed, stage_index])
 
     if "classification" in args.stages:
-        stage_classification(work, rng)
+        stage_classification(work, rng(0))
     if "segmentation" in args.stages:
-        stage_segmentation(work, rng, args.nnunet_model, args.device)
+        stage_segmentation(work, rng(1), args.nnunet_model, args.device)
     if "vermis" in args.stages:
-        stage_vermis(work, rng)
+        stage_vermis(work, rng(2))
 
     n_fail = sum(r[2] == "FAIL" for r in RESULTS)
     n_pass = sum(r[2] == "PASS" for r in RESULTS)
