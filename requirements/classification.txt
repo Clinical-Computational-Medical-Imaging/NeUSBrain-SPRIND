@@ -1,0 +1,12 @@
+# Environment 1: TensorFlow classifiers (src/classification, training/classification)
+tensorflow>=2.15
+opencv-python
+nibabel
+numpy
+pandas
+pydicom
+pydantic>=2
+SimpleITK
+scikit-learn
+matplotlib
+pillow

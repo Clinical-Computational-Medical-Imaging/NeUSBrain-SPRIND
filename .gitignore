@@ -1,0 +1,26 @@
+# Local-only material (patient data, internal scripts) - never commit
+_internal/
+data/
+token.txt
+
+# Environments
+*_env/
+.venv/
+venv/
+
+# nnU-Net working folders
+nnUNet_raw/
+nnUNet_preprocessed/
+nnUNet_results/
+
+# Outputs
+outputs/
+logs/
+*.log
+
+# Python / OS
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
+.vscode/

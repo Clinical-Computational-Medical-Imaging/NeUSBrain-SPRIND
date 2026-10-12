@@ -1,0 +1,10 @@
+# Environment 3: statistical shape model + vermis height measurement (src/vermis_height)
+numpy
+scipy
+pandas
+nibabel
+opencv-python
+pydicom
+pydantic>=2
+pycpd
+matplotlib

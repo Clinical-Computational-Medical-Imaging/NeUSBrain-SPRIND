@@ -1,0 +1,11 @@
+# Environment 2: nnU-Net v2 segmentation (src/segmentation, training/segmentation)
+torch
+nnunetv2
+nibabel
+numpy
+pandas
+scipy
+pydicom
+SimpleITK
+matplotlib
+pillow
