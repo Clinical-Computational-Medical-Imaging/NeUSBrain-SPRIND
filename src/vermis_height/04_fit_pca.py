@@ -425,10 +425,13 @@ def signed_angle_from_vertical_deg(point_a: np.ndarray, point_b: np.ndarray) -> 
     is normalized to not depend on which point is "a" vs "b".
     """
 
-    dx = point_a[0] - point_b[0]
-    dy = point_a[1] - point_b[1]
+    # Points are in the transposed NIfTI array space of
+    # 01_preprocess_data.py: point[0] ("x") = original image row
+    # (vertical), point[1] ("y") = original image column (horizontal).
+    d_vertical = point_a[0] - point_b[0]
+    d_horizontal = point_a[1] - point_b[1]
 
-    angle = float(np.degrees(np.arctan2(dx, dy)))
+    angle = float(np.degrees(np.arctan2(d_horizontal, d_vertical)))
 
     if angle > 90:
         angle -= 180
@@ -484,7 +487,9 @@ def correct_orientation(
         }
 
     centroid = fitted_shape.mean(axis=0)
-    correction_deg = angle_before
+    # The angle is measured from the x axis towards y, so rotating
+    # by -angle brings the axis back onto x (= original vertical).
+    correction_deg = -angle_before
 
     corrected_shape = rotate_points(fitted_shape, correction_deg, centroid)
 

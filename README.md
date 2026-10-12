@@ -66,6 +66,10 @@ images**. The pipeline has three stages:
 │       ├── 06_measure_vermis.py      # vermis height from fitted landmarks
 │       ├── 07_create_vermis_statistics.py # growth curves vs. corrected age
 │       └── run_pipeline.sh           # runs 01 → 07
+├── tests/
+│   ├── smoke_test.py                 # end-to-end smoke test on synthetic data
+│   ├── evaluate.py                   # metrics → Markdown tables
+│   └── run_cluster_evaluation.sh     # SLURM: smoke test + evaluation on real data
 ├── training/
 │   ├── classification/               # labeling tool + plane classifier training
 │   └── segmentation/                 # build nnU-Net datasets (skull, cerebellum)
@@ -365,6 +369,91 @@ cp -r outputs/ssm_work/pca/sagittal models/ssm/
 If you change `--n-landmarks` or rebuild the model, check the landmark
 indices again with `05_visualize_landmarks.py`, because they depend on the
 template.
+
+---
+
+## Results
+
+### Current submission models
+
+> **TODO:** run `tests/run_cluster_evaluation.sh` (see [Testing](#testing)) and
+> replace this block with the generated `results.md`. It covers the
+> coronal/sagittal classifier, the skull and cerebellum nnU-Nets (Dice, HD95 in
+> mm on the held-out `imagesTs`) and the agreement of the automatic vermis
+> height with the height measured on the ground-truth segmentation.
+
+### Earlier development results
+
+From our training and evaluation runs during development. The segmentation
+numbers are from **earlier nnU-Net versions** than the submitted ones.
+
+**Classification**
+
+| Model | Evaluation set | Accuracy | Notes |
+|---|---|---|---|
+| Include / exclude | validation split, 83 images (20 % of 419) | 0.976–0.988 | last training epochs |
+| Include / exclude | reviewer check, 703 images | 0.761 | `include`: precision 0.820, recall 0.761, F1 0.789 |
+| Coronal / sagittal | validation split, 59 images (20 % of 297) | 0.966–0.983 | last training epochs |
+
+**Segmentation** (2D nnU-Net, held-out test images)
+
+| Model | n | Dice | IoU | Precision | Recall |
+|---|---|---|---|---|---|
+| nnU-Net (Dataset005) | 21 | 0.813 ± 0.064 | 0.690 ± 0.090 | 0.815 ± 0.093 | 0.824 ± 0.090 |
+| Otsu threshold baseline | 21 | 0.108 ± 0.063 | 0.055 ± 0.038 | 0.055 ± 0.038 | 0.979 ± 0.054 |
+| nnU-Net (Dataset003), one patient series | 64 | 0.662 | 0.503 | 0.789 | 0.580 |
+
+**Vermis height pipeline on synthetic data** (`tests/smoke_test.py`): 15
+synthetic vermis shapes with known height (11–15 mm, anisotropic spacing
+0.12 × 0.10 mm): all 15 fitted with HD95 ≤ 1.5 mm (median 0.83 mm), measured
+height MAE 0.35 mm, max. relative error 8.7 %.
+
+---
+
+## Testing
+
+### Smoke test (synthetic data, runs anywhere)
+
+```bash
+python tests/smoke_test.py
+```
+
+No patient data needed. It checks that:
+
+* both Keras classifiers load and classify PNG, NIfTI and DICOM inputs
+  (`classify.py`), with the expected CSV output;
+* `make_vermis_labelmap.py` merges predictions correctly (largest component,
+  skull/cerebellum labels, spacing kept);
+* the shape-model pipeline (02 → 03 → 04 → 06) runs on synthetic vermis masks
+  in the exact layout of `01_preprocess_data.py`, fits them well, and measures
+  the **known** height within 10 %;
+* with `--nnunet-model <trained model folder>`, `segment.py` also runs with a
+  real nnU-Net.
+
+Stages whose dependencies are not installed are skipped, so you can run it in
+both the TensorFlow and the nnU-Net environment.
+
+### Evaluation on real data (cluster)
+
+`tests/run_cluster_evaluation.sh` is a SLURM script that runs the smoke test
+in both environments, then evaluates on held-out data:
+
+1. classifiers against reviewer labels (`tests/evaluate.py classifier`);
+2. nnU-Net predictions on `imagesTs` vs. `labelsTs`: Dice and HD95 in mm
+   (`tests/evaluate.py seg`);
+3. the vermis height from nnU-Net segmentations vs. from ground-truth
+   segmentations, both measured with the same SSM method: bias, MAE, 95 %
+   limits of agreement, Pearson r (`tests/evaluate.py vermis`).
+
+```bash
+# fill in the CONFIG block first (environments, nnU-Net paths, label CSV)
+mkdir -p logs && sbatch tests/run_cluster_evaluation.sh
+```
+
+The Markdown tables are written to `outputs/evaluation_<date>/results.md`.
+
+> Images that were used for training will inflate the classifier numbers.
+> Use a reviewer CSV with images that were not used for training.
 
 ---
 

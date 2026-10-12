@@ -84,10 +84,15 @@ def angle_from_vertical_deg(point_a: pd.Series, point_b: pd.Series) -> float:
     "a" vs "b").
     """
 
-    dx = abs(point_a["x"] - point_b["x"])
-    dy = abs(point_a["y"] - point_b["y"])
+    # Landmarks live in the NIfTI array space written by
+    # 01_preprocess_data.py, which stores the image transposed (W, H):
+    # landmark "x" = original image row (vertical), landmark "y" =
+    # original image column (horizontal). "Vertical" here means vertical
+    # in the original image, as shown in the visualizations.
+    d_vertical = abs(point_a["x"] - point_b["x"])
+    d_horizontal = abs(point_a["y"] - point_b["y"])
 
-    return float(np.degrees(np.arctan2(dx, dy)))
+    return float(np.degrees(np.arctan2(d_horizontal, d_vertical)))
 
 
 def resolve_adaptive_anchors(
@@ -121,8 +126,9 @@ def resolve_adaptive_anchors(
     if adaptive_search_window <= 0:
         return landmark_a, landmark_b
 
-    y_a = coords.loc[landmark_a, "y"]
-    y_b = coords.loc[landmark_b, "y"]
+    # Original image vertical = landmark "x" (see angle_from_vertical_deg)
+    y_a = coords.loc[landmark_a, "x"]
+    y_b = coords.loc[landmark_b, "x"]
 
     direction_a = "max" if y_a > y_b else "min"
     direction_b = "min" if direction_a == "max" else "max"
@@ -133,7 +139,7 @@ def resolve_adaptive_anchors(
             (nominal_index + offset) % n_landmarks
             for offset in range(-adaptive_search_window, adaptive_search_window + 1)
         ]
-        ys = np.array([coords.loc[idx, "y"] for idx in candidates])
+        ys = np.array([coords.loc[idx, "x"] for idx in candidates])
 
         best_local = int(np.argmax(ys)) if direction == "max" else int(np.argmin(ys))
 
@@ -330,13 +336,10 @@ def plot_measurement(
         linewidth = 2.5 if is_anchor else 1.2
         alpha = 1.0 if is_anchor else 0.7
 
-        # Angle for the legend text is computed from the DISPLAYED
-        # (swapped) coordinates, so it matches what's visually shown
-        # here. The angle stored in measurement_detail CSVs / used for
-        # QC (row["angle_from_vertical_deg"]) is computed from the
-        # true, unswapped data - that's the clinically correct one;
-        # this is a display-only label so it isn't confusing on screen.
-        display_angle_deg = angle_from_vertical_deg(point_a, point_b)
+        # The display shows the original image orientation, which is
+        # the orientation angle_from_vertical_deg refers to - so the
+        # stored QC angle is also the angle as shown.
+        display_angle_deg = row["angle_from_vertical_deg"]
 
         ax.plot(
             [point_a["x"], point_b["x"]], [point_a["y"], point_b["y"]],
