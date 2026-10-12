@@ -66,9 +66,10 @@ images**. The pipeline has three stages:
 │       ├── 06_measure_vermis.py      # vermis height from fitted landmarks
 │       ├── 07_create_vermis_statistics.py # growth curves vs. corrected age
 │       └── run_pipeline.sh           # runs 01 → 07
-└── training/
-    ├── classification/               # labeling tool + plane classifier training
-    └── segmentation/                 # build nnU-Net datasets (skull, cerebellum)
+├── training/
+│   ├── classification/               # labeling tool + plane classifier training
+│   └── segmentation/                 # build nnU-Net datasets (skull, cerebellum)
+└── vermis-height/                    # alternative measurement: chord through the centroid
 ```
 
 ## Installation
@@ -290,6 +291,11 @@ corresponding landmarks.
    final value**), `std_mm`, `min_mm`, `max_mm`. Pairs whose line deviates
    more than `--max-angle-deviation-deg` (25°) from vertical are discarded;
    if none are left, the case is marked `measurement_reliable = False`.
+
+> **Alternative method:** [`vermis-height/`](vermis-height/README.md) measures
+> the height directly on the mask as a chord through the vermis centroid along
+> its principal axis (no shape model needed). It reads the same labelmaps
+> (label 2 = vermis), so you can run it on `outputs/labelmaps` to compare.
 
 ### Measuring new images (inference)
 
