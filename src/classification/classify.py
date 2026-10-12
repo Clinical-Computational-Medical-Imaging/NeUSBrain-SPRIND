@@ -18,7 +18,7 @@ This script has NO nnU-Net/torch dependency - only tensorflow, opencv,
 nibabel, pandas. Run step 2 (src/segmentation/segment.py) separately, in whatever
 environment has nnunetv2/torch, pointing it at --output-csv from this run.
 
-Requirements
+Requirements 
 ------------
     pip install tensorflow opencv-python nibabel pandas
     pip install SimpleITK   # for DICOM series reading
