@@ -19,8 +19,8 @@ images**. The pipeline has three stages:
  │ 1a include / exclude │   EfficientNet, 288×256 input
  └──────────┬───────────┘
             ▼
- ┌──────────────────────┐   models/classifiers/cor_sag/cp.keras
- │ 1b coronal/sagittal  │   (+ optional 3-class mid-sagittal model)
+ ┌──────────────────────┐   models/classifiers/mid_sag/cp.keras
+ │ 1b mid-sagittal?     │   mid_saggital / not_mid_saggital
  └──────────┬───────────┘
             ▼
  ┌──────────────────────┐   nnU-Net 2D: skull model + cerebellum model
@@ -45,7 +45,7 @@ images**. The pipeline has three stages:
 ├── models/
 │   ├── classifiers/
 │   │   ├── incl_excl/cp.keras        # include / exclude classifier (TensorFlow)
-│   │   └── cor_sag/cp.keras          # coronal / sagittal classifier (TensorFlow)
+│   │   └── mid_sag/cp.keras          # mid-sagittal / not mid-sagittal classifier (TensorFlow)
 │   ├── nnunet/                       # nnU-Net results folders go here (see below)
 │   └── ssm/                          # PCA shape model (pca_shape_model.npz) goes here
 ├── requirements/                     # one requirements file per environment
@@ -55,7 +55,7 @@ images**. The pipeline has three stages:
 │   │   └── predict_incl_excl_dicom.py# alternative: DICOM-only, with US region cropping
 │   ├── segmentation/
 │   │   ├── segment.py                # stage 2: nnU-Net inference on classified cases
-│   │   ├── nnunet_inference.py       # nnU-Net inference + Dice/HD95 on a test set
+│   │   ├── nnunet_inference.py       # nnU-Net inference + evaluation on a test set
 │   │   └── make_vermis_labelmap.py   # merge predictions → 1 = skull, 2 = cerebellum
 │   └── vermis_height/
 │       ├── 01_preprocess_data.py     # DICOM + labels → cropped 2D NIfTI with mm spacing
@@ -100,8 +100,7 @@ pip install -r requirements/vermis_height.txt
 | Stage | Model | Location | Input | Output |
 |---|---|---|---|---|
 | 1a | Include / exclude CNN (Keras, EfficientNet) | `models/classifiers/incl_excl/cp.keras` | RGB 288×256 | `exclude`, `include` |
-| 1b | Coronal / sagittal CNN (Keras) | `models/classifiers/cor_sag/cp.keras` | RGB 288×256 | `Coronal`, `Saggital` |
-| 1c | Mid-sagittal plane CNN (optional, Keras EfficientNet-B3) | train with `training/classification/train_plane_classifier_tf.py` | RGB 300×300 | `not_relevant`, `mid_saggital`, `relevant_coronal` |
+| 1b | Mid-sagittal plane CNN (Keras) | `models/classifiers/mid_sag/cp.keras` | RGB | `not_mid_saggital`, `mid_saggital` |
 | 2a | Skull segmentation (nnU-Net v2, `2d`) | `models/nnunet/Dataset009_*/nnUNetTrainer__nnUNetPlans__2d/` | US image | 1 = skull |
 | 2b | Cerebellum segmentation (nnU-Net v2, `2d`) | `models/nnunet/Dataset010_midsagittal_cerebellum/nnUNetTrainer__nnUNetPlans__2d/` | mid-sagittal US image | 1 = cerebellum |
 | 3 | Sagittal PCA shape model | `models/ssm/sagittal/pca_shape_model.npz` | labelmap (label 2) | 100 fitted landmarks |
@@ -144,43 +143,38 @@ python src/classification/classify.py \
     --min-confidence 0.5
 ```
 
-### 1b. Plane: coronal vs. sagittal
+### 1b. Plane: mid-sagittal vs. not mid-sagittal
 
-Run the same script with the plane model. `--class-names` gives the model's
-output order and `--positive-class` the class that sets `included=True`:
+A binary classifier decides whether an image shows the mid-sagittal plane,
+the only plane in which the vermis height is measured. It also rejects
+para-sagittal and coronal slices. Run the same script with the plane model.
+`--class-names` gives the model's output order and `--positive-class` the
+class that sets `included=True`:
 
 ```bash
 python src/classification/classify.py \
     --input /path/to/images \
-    --tf-model models/classifiers/cor_sag/cp.keras \
-    --class-names Coronal Saggital \
-    --positive-class Saggital \
+    --tf-model models/classifiers/mid_sag/cp.keras \
+    --class-names not_mid_saggital mid_saggital \
+    --positive-class mid_saggital \
     --harmonized-dir outputs/harmonized \
-    --output-csv outputs/cor_sag.csv
+    --output-csv outputs/mid_sag.csv
 ```
 
-Combine both results. Only images that are **included and sagittal** go to
-segmentation:
+Combine both results. Only images that are **included and mid-sagittal** go
+to segmentation:
 
 ```bash
 python - <<'EOF'
 import pandas as pd
 a = pd.read_csv("outputs/incl_excl.csv")
-b = pd.read_csv("outputs/cor_sag.csv")[["case_id", "classifier_label", "included"]]
+b = pd.read_csv("outputs/mid_sag.csv")[["case_id", "classifier_label", "included"]]
 m = a.merge(b, on="case_id", suffixes=("", "_plane"))
 m["included"] = m["included"] & m["included_plane"]
 m.to_csv("outputs/mid_sagittal_cases.csv", index=False)
 print(m["included"].value_counts())
 EOF
 ```
-
-### 1c. Mid-sagittal (optional)
-
-The coronal/sagittal model does not separate mid-sagittal from para-sagittal
-slices. For that we trained a 3-class EfficientNet
-(`not_relevant` / `mid_saggital` / `relevant_coronal`) on reviewer labels from
-`training/classification/label_review_tool.py`. See
-[Training → Classifiers](#classifiers).
 
 ---
 
@@ -241,14 +235,47 @@ otherwise distort the contour used for the shape fit.
 
 ### Evaluate a segmentation model
 
-`src/segmentation/nnunet_inference.py` runs a trained model on a test set
-(`imagesTs`) and reports Dice / HD95 against `labelsTs`, with overlay images:
+`src/segmentation/nnunet_inference.py` runs a trained 2D model on a folder of
+test images and compares the predictions with the ground-truth masks. The
+segmentation results below were produced with this script.
 
 ```bash
-export nnUNet_raw=/path/to/nnUNet_raw
-export nnUNet_results=/path/to/nnUNet_results
-python src/segmentation/nnunet_inference.py --dataset 010 --folds all
+conda activate neus_nnunet
+
+python src/segmentation/nnunet_inference.py \
+    --image /path/to/test/images \
+    --mask /path/to/test/masks \
+    --model models/nnunet/Dataset010_midsagittal_cerebellum/nnUNetTrainer__nnUNetPlans__2d \
+    --fold all \
+    --gt-label 1 \
+    --output outputs/eval_cerebellum
 ```
+
+* `--image` and `--mask` are searched recursively and may contain DICOM,
+  PNG/JPEG/BMP/TIFF or NIfTI files. Images and masks are matched by file name
+  (an nnU-Net channel suffix such as `_0000` is ignored).
+* DICOM images are cropped to the ultrasound region before inference and the
+  prediction is pasted back into the full image.
+* `--fold all` uses the model trained on all data (`fold_all`),
+  `--fold ensemble` ensembles all numbered folds.
+* `--gt-label` is the foreground value in the ground-truth masks
+  (`--pred-label` if the model output uses a different value).
+* `--intensity` (`minmax` or `raw`) and `--spacing` must match how the
+  training data was created.
+
+Outputs in `--output`:
+
+| File | Content |
+|---|---|
+| `predictions/` | predicted label maps (`.nii.gz`) |
+| `overlays/` | PNGs, green = ground truth, red = prediction |
+| `prediction_statistics.csv` | Dice, IoU, sensitivity, specificity, precision per image |
+| `summary_statistics.csv` | mean / std / median / min / max per metric |
+| `processing_log.csv` | status of every image (success, skipped, error) |
+
+Dice and IoU are set to 1 when both the mask and the prediction are empty.
+Precision is undefined (and left out of the summary) when the prediction is
+empty.
 
 ---
 
@@ -374,39 +401,75 @@ template.
 
 ## Results
 
-### Current submission models
+All numbers are on held-out test images.
 
-> **TODO:** run `tests/run_cluster_evaluation.sh` (see [Testing](#testing)) and
-> replace this block with the generated `results.md`. It covers the
-> coronal/sagittal classifier, the skull and cerebellum nnU-Nets (Dice, HD95 in
-> mm on the held-out `imagesTs`) and the agreement of the automatic vermis
-> height with the height measured on the ground-truth segmentation.
+### 1. Classification
 
-### Earlier development results
+**1a. Include / exclude** (n = 98 test images)
 
-From our training and evaluation runs during development. The segmentation
-numbers are from **earlier nnU-Net versions** than the submitted ones.
+| Class | Precision | Recall | F1 | n |
+|---|---|---|---|---|
+| exclude | 1.00 | 0.88 | 0.94 | 41 |
+| include | 0.92 | 1.00 | 0.96 | 57 |
+| **macro avg** | 0.96 | 0.94 | 0.95 | 98 |
 
-**Classification**
+Accuracy **0.949**. Confusion matrix (rows = reviewer, columns = model):
 
-| Model | Evaluation set | Accuracy | Notes |
-|---|---|---|---|
-| Include / exclude | validation split, 83 images (20 % of 419) | 0.976–0.988 | last training epochs |
-| Include / exclude | reviewer check, 703 images | 0.761 | `include`: precision 0.820, recall 0.761, F1 0.789 |
-| Coronal / sagittal | validation split, 59 images (20 % of 297) | 0.966–0.983 | last training epochs |
+| | pred. exclude | pred. include |
+|---|---|---|
+| **exclude** | 36 | 5 |
+| **include** | 0 | 57 |
 
-**Segmentation** (2D nnU-Net, held-out test images)
+No usable image was rejected; 5 of 41 unusable images were let through.
 
-| Model | n | Dice | IoU | Precision | Recall |
-|---|---|---|---|---|---|
-| nnU-Net (Dataset005) | 21 | 0.813 ± 0.064 | 0.690 ± 0.090 | 0.815 ± 0.093 | 0.824 ± 0.090 |
-| Otsu threshold baseline | 21 | 0.108 ± 0.063 | 0.055 ± 0.038 | 0.055 ± 0.038 | 0.979 ± 0.054 |
-| nnU-Net (Dataset003), one patient series | 64 | 0.662 | 0.503 | 0.789 | 0.580 |
+**1b. Mid-sagittal vs. not mid-sagittal** (n = 2158 test images)
 
-**Vermis height pipeline on synthetic data** (`tests/smoke_test.py`): 15
-synthetic vermis shapes with known height (11–15 mm, anisotropic spacing
-0.12 × 0.10 mm): all 15 fitted with HD95 ≤ 1.5 mm (median 0.83 mm), measured
-height MAE 0.35 mm, max. relative error 8.7 %.
+| Class | Precision | Recall | F1 | n |
+|---|---|---|---|---|
+| not_mid_saggital | 0.99 | 0.99 | 0.99 | 2033 |
+| mid_saggital | 0.84 | 0.90 | 0.87 | 125 |
+| **macro avg** | 0.92 | 0.95 | 0.93 | 2158 |
+
+Accuracy **0.98**. Only 6 % of the test images are mid-sagittal, so the
+F1 of the `mid_saggital` class (0.87) is the more informative number.
+
+### 2. Segmentation (nnU-Net v2, 2D)
+
+**Cerebellum / vermis** (`Dataset010_midsagittal_cerebellum`, n = 148 test images)
+
+| Metric | Mean ± SD | Median | Min | Max |
+|---|---|---|---|---|
+| Dice | 0.922 ± 0.079 | 0.933 | 0.126 | 0.996 |
+| IoU | 0.863 ± 0.098 | 0.875 | 0.067 | 0.993 |
+| Sensitivity | 0.923 ± 0.091 | 0.942 | 0.071 | 1.000 |
+| Specificity | 0.999 ± 0.001 | 0.999 | 0.996 | 1.000 |
+| Precision | 0.928 ± 0.071 | 0.944 | 0.547 | 0.997 |
+
+**Skull** (`Dataset009`, n = 43 test images)
+
+| Metric | Mean ± SD | Median | Min | Max |
+|---|---|---|---|---|
+| Dice | 0.864 ± 0.173 | 0.905 | 0.000 | 0.993 |
+| IoU | 0.790 ± 0.205 | 0.826 | 0.000 | 0.986 |
+| Sensitivity | 0.861 ± 0.184 | 0.916 | 0.000 | 0.994 |
+| Specificity | 0.998 ± 0.002 | 0.999 | 0.989 | 1.000 |
+| Precision | 0.893 ± 0.103 | 0.925 | 0.667 | 0.994 |
+
+Precision is computed on 42 images: one image has an empty prediction
+(Dice 0), for which precision is undefined.
+
+### 3. Vermis height
+
+> **TODO:** run `tests/run_cluster_evaluation.sh` (see [Testing](#testing))
+> and add the agreement between the vermis height measured on nnU-Net
+> segmentations and on ground-truth segmentations (bias, MAE, 95 % limits of
+> agreement).
+
+**Synthetic data** (`tests/smoke_test.py`): 15 synthetic vermis shapes with
+known height (11–15 mm, anisotropic spacing 0.12 × 0.10 mm). Over 10 random
+seeds the measured height had a mean relative error of 2.6–4.4 % (MAE
+0.33–0.60 mm), the largest single-case error was 13.3 %, and every fitted
+shape passed the verticality check.
 
 ---
 
@@ -420,13 +483,13 @@ python tests/smoke_test.py
 
 No patient data needed. It checks that:
 
-* both Keras classifiers load and classify PNG, NIfTI and DICOM inputs
+* the Keras classifiers load and classify PNG, NIfTI and DICOM inputs
   (`classify.py`), with the expected CSV output;
 * `make_vermis_labelmap.py` merges predictions correctly (largest component,
   skull/cerebellum labels, spacing kept);
 * the shape-model pipeline (02 → 03 → 04 → 06) runs on synthetic vermis masks
   in the exact layout of `01_preprocess_data.py`, fits them well, and measures
-  the **known** height within 10 %;
+  the **known** height (mean relative error ≤ 5 %, every case ≤ 15 %);
 * with `--nnunet-model <trained model folder>`, `segment.py` also runs with a
   real nnU-Net.
 

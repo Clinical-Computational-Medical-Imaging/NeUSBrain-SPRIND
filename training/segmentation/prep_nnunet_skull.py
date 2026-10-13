@@ -15,7 +15,7 @@ Merge two datasets into one nnU-Net v2 raw dataset:
          seg_root/<patient_id>/...      (NIfTI segmentation files)
 
      For each patient, every DICOM is matched to a segmentation file by
-     SeriesDescription (same matching rule as nnunet_inference.py:
+     SeriesDescription (file name
      <SeriesDescription>.nii.gz / .nii, searched recursively under that
      patient's segmentation folder). Some segmentations contain label 1
      and label 2; only label 1 is kept as foreground, label 2 (and

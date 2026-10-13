@@ -1,537 +1,1087 @@
+#!/usr/bin/env python3
+
 """
+Batch nnU-Net v2 inference + evaluation for single-channel 2D models.
 
-export nnUNet_raw=/path/to/nnUNet_raw
-export nnUNet_results=/path/to/nnUNet_results
+Required:
+    --image   Folder with original images (searched recursively)
+    --mask    Folder with ground-truth masks (searched recursively)
+    --model   Trained nnU-Net *trainer* folder, i.e. the folder that contains
+              dataset.json, plans.json and fold_X / fold_all subfolders
+              (e.g. .../Dataset001_X/nnUNetTrainer__nnUNetPlans__2d)
+    --output  Output folder
 
-python3 src/segmentation/nnunet_inference.py \
-    --dataset 006 \
-    --folds all
+Folds (--fold):
+    --fold 0            single fold (default)
+    --fold 0 1 2        ensemble of the given folds
+    --fold ensemble     ensemble of every fold_<number> folder
+    --fold all          the model trained with `nnUNetv2_train ... all`
+                        (folder fold_all). If fold_all does not exist, falls
+                        back to ensembling all numbered folds (with a warning).
 
+Supported formats (images and masks):
+    DICOM, PNG, JPEG, BMP, TIFF, NIfTI (.nii / .nii.gz)
 
+Image -> mask matching:
+    By filename without extension (case-insensitive). A trailing nnU-Net
+    channel suffix such as "_0000" is ignored if no exact match exists.
+    Ambiguous matches are resolved by relative subfolder, otherwise reported.
 
-That's it - everything else is auto-detected from the dataset number:
-  - nnUNet_raw/Dataset006_* and nnUNet_results/Dataset006_* are located automatically
-    (searches by the zero-padded dataset id, so '6', '006', and the full folder name
-    'Dataset006_NEUSBrainSkull' are all accepted for --dataset).
-  - The trained model variant (trainer__plans__configuration folder) is auto-discovered
-    under nnUNet_results/<dataset>/. If more than one exists (e.g. you trained both '2d'
-    and '3d_fullres'), it's auto-picked by a configuration priority
-    (3d_fullres > 3d_lowres > 2d > 3d_cascade_fullres); if that's still ambiguous
-    (e.g. two different trainers for the same configuration), you'll get a clear error
-    listing the options and asking you to pass --trainer/--plans/--configuration.
-  - The file format (.png, .nii.gz, ...) is read from dataset.json's "file_ending" key -
-    no hardcoded pattern, works for 2D natural-image datasets and 3D NIfTI datasets alike.
-  - Foreground labels (including region-based labels mapped to a list of values, and an
-    "ignore" label) are read from dataset.json rather than assumed to be plain ints.
-  - --gt_dir defaults to nnUNet_raw/<dataset>/labelsTs.
-  - If the resolved configuration is 3d_cascade_fullres, the 3d_lowres stage is run
-    first automatically and fed in as the previous-stage segmentation - cascade models
-    were previously unsupported by this script.
+DICOM processing:
+    1. Read pixels, apply rescale slope/intercept, invert MONOCHROME1,
+       convert colour to luminance.
+    2. Crop to the ultrasound region (SequenceOfUltrasoundRegions),
+       fall back to contour-based cropping, else use the full image.
+    3. Paste the prediction back into the original image size.
 
-You can still override any auto-detected piece explicitly (--trainer, --plans,
---configuration, --input_dir, --output_dir, --gt_dir, --checkpoint_name) if you need to
-point at something non-standard.
+Outputs:
+    predictions/                 predicted label maps (.nii.gz)
+    overlays/                    PNGs (green = ground truth, red = prediction)
+    images/                      original images as .nii.gz
+    prediction_statistics.csv    per-case metrics
+    mean_statistics.csv          mean metrics (+ case counts)
+    summary_statistics.csv       mean / std / median / min / max per metric
+    processing_log.csv           one row per image with its final status
 
-Requirements
-------------
-    pip install nnunetv2 matplotlib pillow numpy torch nibabel
-    (SimpleITK is used as an optional fallback reader for formats other than
-    the ones PIL/nibabel handle, e.g. .mha/.nrrd - only imported if needed)
+Important:
+    Intensity handling (--intensity) and input spacing (--spacing) must match
+    how the training data was created, otherwise results will be degraded.
 """
 
 import argparse
-import csv
 import json
+import re
+import tempfile
+import traceback
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
 
+import cv2
 import numpy as np
+import pandas as pd
+import pydicom
+import SimpleITK as sitk
 import torch
-import matplotlib.pyplot as plt
 from PIL import Image
 
-from nnunetv2.paths import nnUNet_results, nnUNet_raw
-from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
-
-# Preference order used only to auto-pick between multiple trained
-# configurations for the same dataset, when --configuration isn't given.
-CONFIGURATION_PRIORITY = ["3d_fullres", "3d_lowres", "2d", "3d_cascade_fullres"]
+try:  # pydicom >= 3
+    from pydicom.pixels import apply_modality_lut
+except ImportError:  # pydicom 2.x
+    from pydicom.pixel_data_handlers.util import apply_modality_lut
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Dataset / model-variant resolution - the "just give me the number" part
-# ─────────────────────────────────────────────────────────────────────────────
+# ============================================================
+# File formats
+# ============================================================
 
-def resolve_dataset_folder(base_dir: Path, dataset_arg: str) -> Path:
-    """Find the Dataset<NNN>_<Name> folder under base_dir (nnUNet_raw or
-    nnUNet_results) for a given dataset id. Accepts '6', '006', or the full
-    'Dataset006_NEUSBrainSkull' folder name."""
-    base_dir = Path(base_dir)
-    if dataset_arg.lower().startswith("dataset"):
-        candidate = base_dir / dataset_arg
-        if candidate.exists():
-            return candidate
-        raise FileNotFoundError(f"{candidate} does not exist")
+RASTER_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
+NIFTI_EXTENSIONS = {".nii", ".nii.gz"}
+DICOM_EXTENSIONS = {".dcm", ".dicom"}
+
+# Files that are never images; skipped without trying to open them.
+NON_IMAGE_EXTENSIONS = {
+    ".json", ".csv", ".txt", ".md", ".py", ".pkl", ".pth", ".log",
+    ".xml", ".yaml", ".yml", ".zip", ".npz", ".npy",
+}
+
+METRIC_COLUMNS = ["dice", "iou", "sensitivity", "specificity", "precision"]
+
+
+def get_extension(path):
+    name = Path(path).name.lower()
+    if name.endswith(".nii.gz"):
+        return ".nii.gz"
+    return Path(path).suffix.lower()
+
+
+def image_stem(path):
+    """Filename without its (possibly double) extension."""
+    name = Path(path).name
+    if name.lower().endswith(".nii.gz"):
+        return name[:-7]
+    return Path(name).stem
+
+
+def detect_format(path):
+    """Return 'dicom', 'raster' or 'nifti'; raise ValueError otherwise."""
+    path = Path(path)
+    ext = get_extension(path)
+
+    if ext in NIFTI_EXTENSIONS:
+        return "nifti"
+    if ext in RASTER_EXTENSIONS:
+        return "raster"
+    if ext in NON_IMAGE_EXTENSIONS:
+        raise ValueError(f"Not an image: {path}")
+
+    # Unknown or missing extension: sniff the content.
+    try:
+        pydicom.dcmread(str(path), stop_before_pixels=True)
+        return "dicom"
+    except Exception:
+        pass
+
+    if ext in DICOM_EXTENSIONS:
+        raise ValueError(f"Unreadable DICOM file: {path}")
 
     try:
-        dataset_id = int(dataset_arg)
-    except ValueError:
-        raise ValueError(
-            f"--dataset {dataset_arg!r} isn't a number or a 'DatasetNNN_...' folder name"
-        )
+        with Image.open(path) as img:
+            img.verify()
+        return "raster"
+    except Exception:
+        pass
 
-    matches = sorted(base_dir.glob(f"Dataset{dataset_id:03d}_*"))
-    if not matches:
-        raise FileNotFoundError(f"No Dataset{dataset_id:03d}_* folder found under {base_dir}")
-    if len(matches) > 1:
-        raise FileNotFoundError(
-            f"Multiple folders match Dataset{dataset_id:03d}_* under {base_dir}: "
-            f"{[m.name for m in matches]} - pass the full dataset name via --dataset instead"
-        )
-    return matches[0]
+    raise ValueError(f"Unsupported image format: {path}")
 
 
-def resolve_model_variant(
-    results_dataset_dir: Path,
-    trainer: Optional[str] = None,
-    plans: Optional[str] = None,
-    configuration: Optional[str] = None,
-) -> Path:
-    """Find the trained model variant folder (TRAINER__PLANS__CONFIGURATION)
-    under a dataset's nnUNet_results folder, auto-picking one if unambiguous."""
-    candidates = [d for d in results_dataset_dir.iterdir() if d.is_dir() and d.name.count("__") == 2]
+def list_supported_files(root, exclude=()):
+    """Recursively collect (path, format) for supported files under root."""
+    root = Path(root)
+    exclude = [Path(e).resolve() for e in exclude]
+    files = []
 
-    def matches(name: str) -> bool:
-        t, p, c = name.split("__")
-        if trainer and t != trainer:
-            return False
-        if plans and p != plans:
-            return False
-        if configuration and c != configuration:
-            return False
-        return True
-
-    if trainer or plans or configuration:
-        candidates = [d for d in candidates if matches(d.name)]
-
-    if not candidates:
-        raise FileNotFoundError(
-            f"No trained model variant found under {results_dataset_dir} "
-            f"matching trainer={trainer}, plans={plans}, configuration={configuration}"
-        )
-
-    if len(candidates) == 1:
-        return candidates[0]
-
-    # Multiple candidates remain - try to break the tie purely by configuration
-    # priority (handles the common "trained 2d and 3d_fullres, didn't say which" case).
-    by_config: Dict[str, List[Path]] = {}
-    for d in candidates:
-        cfg = d.name.split("__")[2]
-        by_config.setdefault(cfg, []).append(d)
-
-    for pref in CONFIGURATION_PRIORITY:
-        if pref in by_config and len(by_config[pref]) == 1:
-            print(f"Multiple trained model variants found; auto-picking configuration '{pref}': {by_config[pref][0].name}")
-            return by_config[pref][0]
-
-    names = [d.name for d in candidates]
-    raise ValueError(
-        f"Multiple trained model variants found under {results_dataset_dir} and none could "
-        f"be auto-selected: {names}. Disambiguate with --trainer/--plans/--configuration."
-    )
-
-
-def load_dataset_json(raw_dataset_dir: Path, model_variant_dir: Path) -> dict:
-    """Prefer nnUNet_raw's dataset.json (the canonical source); fall back to
-    the copy nnU-Net stores inside the trained model folder, in case the raw
-    dataset was pruned/moved after training."""
-    for candidate in (raw_dataset_dir / "dataset.json", model_variant_dir / "dataset.json"):
-        if candidate.exists():
-            with open(candidate) as f:
-                return json.load(f)
-    raise FileNotFoundError(f"No dataset.json found in {raw_dataset_dir} or {model_variant_dir}")
-
-
-def foreground_label_items(labels: Dict[str, Union[int, list]]) -> Dict[str, Union[int, list]]:
-    """dataset.json's 'labels' includes 'background' (always) and sometimes an
-    'ignore' label - neither should be scored as a foreground class. Values
-    can be a plain int, or a list of ints for region-based training."""
-    return {name: val for name, val in labels.items() if name.lower() not in ("background", "ignore")}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Generic array loading - works for 2D natural images and 3D NIfTI alike
-# ─────────────────────────────────────────────────────────────────────────────
-
-def load_array(path: Path) -> np.ndarray:
-    suffix = "".join(path.suffixes).lower()
-    if suffix in (".nii", ".nii.gz"):
-        import nibabel as nib
-        return np.asarray(nib.load(str(path)).dataobj)
-    try:
-        return np.array(Image.open(path))
-    except Exception as pil_error:
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.name.startswith("."):
+            continue
+        resolved = path.resolve()
+        if any(ex == resolved or ex in resolved.parents for ex in exclude):
+            continue
         try:
-            import SimpleITK as sitk
-            return sitk.GetArrayFromImage(sitk.ReadImage(str(path)))
+            files.append((path, detect_format(path)))
         except Exception:
-            raise ValueError(
-                f"Don't know how to read {path} (tried PIL, then SimpleITK as fallback): {pil_error}"
+            continue
+
+    return files
+
+
+# ============================================================
+# Image <-> mask matching
+# ============================================================
+
+def case_key(path):
+    """Stem without a trailing nnU-Net channel suffix, e.g. '_0000'."""
+    return re.sub(r"_\d{4}$", "", image_stem(path)).casefold()
+
+
+def build_mask_indices(mask_files):
+    exact, stripped = {}, {}
+    for path, _ in mask_files:
+        exact.setdefault(image_stem(path).casefold(), []).append(path)
+        stripped.setdefault(case_key(path), []).append(path)
+    return exact, stripped
+
+
+def match_mask(image_path, image_root, mask_root, exact_index, stripped_index):
+    """
+    Find the mask for an image. Exact stem match first, then match with the
+    channel suffix removed. Returns None if nothing matches.
+    """
+    rel_parent = image_path.relative_to(image_root).parent
+
+    candidates = (
+        (exact_index, image_stem(image_path).casefold()),
+        (stripped_index, case_key(image_path)),
+    )
+
+    for index, key in candidates:
+        matches = index.get(key, [])
+        if not matches:
+            continue
+        if len(matches) == 1:
+            return matches[0]
+
+        same_folder = [
+            m for m in matches
+            if m.relative_to(mask_root).parent == rel_parent
+        ]
+        if len(same_folder) == 1:
+            return same_folder[0]
+
+        raise ValueError(
+            f"Ambiguous mask match for {image_path.name}: "
+            + ", ".join(str(m) for m in matches)
+        )
+
+    return None
+
+
+# ============================================================
+# Model configuration and folds
+# ============================================================
+
+def get_model_config(model_path):
+    dataset_json = model_path / "dataset.json"
+
+    if not dataset_json.exists():
+        hints = sorted(
+            str(p.parent) for p in model_path.rglob("dataset.json")
+        )[:5]
+        msg = f"dataset.json not found in {model_path}."
+        if hints:
+            msg += (
+                " --model must point to the trainer folder. Candidates:\n  "
+                + "\n  ".join(hints)
             )
+        raise FileNotFoundError(msg)
+
+    with open(dataset_json, encoding="utf-8") as f:
+        config = json.load(f)
+
+    ending = config.get("file_ending")
+    if not ending:
+        raise ValueError("file_ending missing from dataset.json")
+
+    channels = config.get("channel_names") or config.get("modality") or {}
+    if len(channels) != 1:
+        raise ValueError(
+            f"This script supports single-channel models only; "
+            f"dataset.json lists {len(channels)} channels: {channels}"
+        )
+
+    return config, ending.lower()
 
 
-def middle_slice_for_display(arr: np.ndarray) -> np.ndarray:
-    """For 3D volumes, visualization shows a single middle slice (Dice is still
-    computed on the full volume elsewhere - this is display-only)."""
-    if arr.ndim == 3 and arr.shape[-1] not in (3, 4):
-        return arr[..., arr.shape[-1] // 2]
-    return arr
+def get_training_spacing(model_path):
+    """Best-effort read of the configuration's target spacing from plans.json."""
+    try:
+        configuration = model_path.name.split("__")[-1]
+        with open(model_path / "plans.json", encoding="utf-8") as f:
+            plans = json.load(f)
+        return configuration, plans["configurations"][configuration]["spacing"]
+    except Exception:
+        return None, None
 
 
-def collect_data(directory: Path, pattern: str) -> List[Path]:
-    return sorted(directory.rglob(pattern))
+def resolve_folds(model_path, fold_args, checkpoint):
+    """
+    Translate --fold arguments into what nnU-Net expects.
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Inference
-# ─────────────────────────────────────────────────────────────────────────────
-
-def run_inference(
-    input_dir: Path,
-    output_dir: Path,
-    model_variant_dir: Path,
-    results_dataset_dir: Path,
-    folds: Tuple,
-    checkpoint_name: str = "checkpoint_final.pth",
-) -> None:
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    configuration = model_variant_dir.name.split("__")[2]
-    prev_stage_dir = None
-    if configuration == "3d_cascade_fullres":
-        print("3d_cascade_fullres detected - running the 3d_lowres stage first "
-              "to produce the previous-stage segmentations it needs.")
-        lowres_variant_dir = resolve_model_variant(results_dataset_dir, configuration="3d_lowres")
-        prev_stage_dir = output_dir / "_lowres_stage_segs"
-        run_inference(input_dir, prev_stage_dir, lowres_variant_dir, results_dataset_dir,
-                      folds, checkpoint_name=checkpoint_name)
-
-    predictor = nnUNetPredictor(
-        tile_step_size=0.5,
-        use_gaussian=True,
-        use_mirroring=True,
-        perform_everything_on_device=True,
-        device=device,
-        verbose=False,
-        verbose_preprocessing=False,
-        allow_tqdm=True,
+    'all' in nnU-Net means the model trained on all data (folder 'fold_all'),
+    which is passed to nnU-Net as the string 'all', not as a list of numbers.
+    """
+    numbered = sorted(
+        int(m.group(1))
+        for p in model_path.iterdir()
+        if p.is_dir() and (m := re.fullmatch(r"fold_(\d+)", p.name))
     )
+    has_fold_all = (model_path / "fold_all").is_dir()
+    tokens = [str(f).strip().lower() for f in fold_args]
 
-    # initializes the network architecture, loads the checkpoint
-    predictor.initialize_from_trained_model_folder(
-        str(model_variant_dir),
-        use_folds=folds,
-        checkpoint_name=checkpoint_name,
-    )
-
-    predictor.predict_from_files(
-        str(input_dir),
-        str(output_dir),
-        save_probabilities=False,
-        overwrite=True,
-        num_processes_preprocessing=2,
-        num_processes_segmentation_export=2,
-        folder_with_segs_from_prev_stage=str(prev_stage_dir) if prev_stage_dir else None,
-        num_parts=1,
-        part_id=0,
-    )
-
-
-def case_id_from_image_path(image_path: Path, file_ending: str) -> str:
-    """nnU-Net input images are named '<case_id>_0000<file_ending>' (channel suffix); strip it."""
-    suffix = f"_0000{file_ending}"
-    name = image_path.name
-    if name.endswith(suffix):
-        return name[: -len(suffix)]
-    return image_path.stem
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Statistics against ground truth
-# ─────────────────────────────────────────────────────────────────────────────
-
-def dice_score(pred: np.ndarray, gt: np.ndarray, label_value: Union[int, list]) -> float:
-    if isinstance(label_value, (list, tuple)):
-        pred_mask = np.isin(pred, label_value)
-        gt_mask = np.isin(gt, label_value)
-    else:
-        pred_mask = pred == label_value
-        gt_mask = gt == label_value
-    intersection = np.logical_and(pred_mask, gt_mask).sum()
-    denom = pred_mask.sum() + gt_mask.sum()
-    return float("nan") if denom == 0 else 2.0 * intersection / denom
-
-
-def compute_statistics(
-    output_dir: Path, gt_dir: Path, labels: Dict[str, Union[int, list]], file_ending: str
-) -> List[dict]:
-    """Per-case Dice score for every foreground label, comparing each predicted
-    segmentation in output_dir against the matching file in gt_dir (labelsTs)."""
-    seg_files = collect_data(output_dir, pattern=f"*{file_ending}")
-    if not seg_files:
-        print(f"No prediction files found in {output_dir} matching '*{file_ending}' - no statistics computed")
-        return []
-
-    foreground_labels = foreground_label_items(labels)
-
-    rows = []
-    for seg_path in seg_files:
-        case_id = seg_path.name[: -len(file_ending)]
-        gt_path = gt_dir / f"{case_id}{file_ending}"
-        if not gt_path.exists():
-            print(f"{seg_path.name}: no matching ground truth at {gt_path} - skipping stats for this case")
-            continue
-
-        try:
-            pred = load_array(seg_path)
-            gt = load_array(gt_path)
-        except Exception as e:
-            print(f"{seg_path.name}: could not read prediction/GT ({e}) - skipping stats for this case")
-            continue
-
-        if pred.shape != gt.shape:
-            print(f"{seg_path.name}: shape mismatch (pred={pred.shape}, gt={gt.shape}) - skipping stats for this case")
-            continue
-
-        row = {"case_id": case_id}
-        for label_name, label_value in foreground_labels.items():
-            row[f"dice_{label_name}"] = dice_score(pred, gt, label_value)
-        rows.append(row)
-
-    return rows
-
-
-def save_statistics_csv(rows: List[dict], csv_path: Path) -> None:
-    if not rows:
-        return
-    fieldnames = list(rows[0].keys())
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-    print(f"Saved per-case statistics -> {csv_path}")
-
-
-def print_summary_statistics(rows: List[dict]) -> None:
-    if not rows:
-        print("No statistics to summarize (no ground-truth matches found).")
-        return
-
-    dice_keys = [k for k in rows[0].keys() if k.startswith("dice_")]
-    print(f"\nSummary statistics over {len(rows)} case(s):")
-    for key in dice_keys:
-        values = [r[key] for r in rows if not np.isnan(r[key])]
-        n_missing = len(rows) - len(values)
-        if values:
+    if tokens == ["all"]:
+        if has_fold_all:
+            folds = ("all",)
+        elif numbered:
             print(
-                f"  {key:20s} mean={np.mean(values):.4f}  std={np.std(values):.4f}  "
-                f"min={np.min(values):.4f}  max={np.max(values):.4f}  n={len(values)}"
-                + (f"  ({n_missing} case(s) had no foreground in either pred or GT)" if n_missing else "")
+                "[WARN] --fold all: no 'fold_all' folder found; "
+                f"ensembling numbered folds {numbered} instead."
             )
+            folds = tuple(numbered)
         else:
-            print(f"  {key:20s} no valid cases (label absent in both pred and GT for all cases)")
+            raise RuntimeError(f"No fold folders found in {model_path}")
+
+    elif tokens == ["ensemble"]:
+        if not numbered:
+            raise RuntimeError(f"No fold_<number> folders found in {model_path}")
+        folds = tuple(numbered)
+
+    else:
+        try:
+            folds = tuple(int(t) for t in tokens)
+        except ValueError:
+            raise ValueError(
+                f"Invalid --fold {fold_args}. Use numbers, 'all' or 'ensemble'."
+            ) from None
+
+    # Every requested fold must have the checkpoint; nnU-Net's own error
+    # for a missing checkpoint is easy to misread.
+    problems = []
+    for fold in folds:
+        fold_dir = model_path / f"fold_{fold}"
+        if not fold_dir.is_dir():
+            problems.append(f"fold_{fold}: folder missing")
+            continue
+        if not (fold_dir / checkpoint).is_file():
+            available = sorted(p.name for p in fold_dir.glob("*.pth"))
+            problems.append(
+                f"fold_{fold}: {checkpoint} missing "
+                f"(available: {available or 'none - training unfinished?'})"
+            )
+
+    if problems:
+        raise RuntimeError(
+            "Cannot use the requested folds:\n  " + "\n  ".join(problems)
+            + "\nUse --fold to pick finished folds, or --checkpoint "
+              "checkpoint_best.pth if only that exists."
+        )
+
+    return folds
 
 
-def statistics_by_case(rows: List[dict]) -> Dict[str, dict]:
-    return {row["case_id"]: row for row in rows}
+# ============================================================
+# Image loading
+# ============================================================
+
+def dicom_to_gray(ds):
+    """Read a single-frame DICOM as a float32 grayscale 2D array."""
+    if int(getattr(ds, "NumberOfFrames", 1) or 1) > 1:
+        raise ValueError("Multi-frame DICOM is not supported")
+
+    array = ds.pixel_array
+    samples = int(getattr(ds, "SamplesPerPixel", 1))
+
+    if samples > 1:
+        if array.ndim != 3 or array.shape[-1] != samples:
+            raise ValueError(f"Unexpected colour DICOM shape {array.shape}")
+        # pydicom >= 3 converts YBR to RGB when decoding; use luminance.
+        rgb = array[..., :3].astype(np.float32)
+        array = rgb @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
+    else:
+        array = apply_modality_lut(array, ds).astype(np.float32)
+        if getattr(ds, "PhotometricInterpretation", "") == "MONOCHROME1":
+            array = array.max() + array.min() - array
+
+    if array.ndim != 2:
+        raise ValueError(f"Only 2D DICOM is supported, got {array.shape}")
+
+    return array.astype(np.float32)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Visualization
-# ─────────────────────────────────────────────────────────────────────────────
+def read_nifti_2d(path):
+    """Read a NIfTI as a 2D array; returns (array, sitk_image, spacing_xy)."""
+    img = sitk.ReadImage(str(path))
+    array = sitk.GetArrayFromImage(img)
 
-def plot_results(
-    input_dir: Path,
-    output_dir: Path,
-    save_dir: Path,
-    file_ending: str,
-    gt_dir: Optional[Path] = None,
-    stats_by_case: Optional[Dict[str, dict]] = None,
-    max_label_value: int = 1,
-) -> None:
-    """For each predicted segmentation, plot the original image, ground truth (if available),
-    predicted mask, and an overlay, and save the figure as a PNG per case. If per-case Dice
-    stats are available, they're added to the figure title. 3D volumes are shown as a single
-    middle slice (Dice itself is computed on the full volume in compute_statistics)."""
-    save_dir.mkdir(parents=True, exist_ok=True)
+    if array.ndim == 3 and array.shape[0] == 1:
+        array = array[0]
+    if array.ndim != 2:
+        raise ValueError(f"Expected a single 2D NIfTI image, got {array.shape}")
 
-    seg_files = collect_data(output_dir, pattern=f"*{file_ending}")
-    if not seg_files:
-        print(f"No prediction files found in {output_dir} matching '*{file_ending}'")
+    spacing = tuple(float(s) for s in img.GetSpacing()[:2])
+    return array, img, spacing
+
+
+def load_image(path, fmt):
+    """Return dict with the 2D float32 image and its metadata."""
+    if fmt == "dicom":
+        ds = pydicom.dcmread(str(path))
+        return {"array": dicom_to_gray(ds), "ds": ds,
+                "sitk": None, "spacing": None}
+
+    if fmt == "raster":
+        with Image.open(path) as img:
+            array = np.array(img.convert("L"), dtype=np.float32)
+        return {"array": array, "ds": None, "sitk": None, "spacing": None}
+
+    if fmt == "nifti":
+        array, img, spacing = read_nifti_2d(path)
+        return {"array": array.astype(np.float32), "ds": None,
+                "sitk": img, "spacing": spacing}
+
+    raise ValueError(f"Unsupported format: {fmt}")
+
+
+def to_label_array(array, path):
+    """Validate and convert a label image to integers."""
+    array = np.asarray(array)
+
+    if array.ndim == 3:
+        # Colour-stored masks are only acceptable if all channels agree.
+        channels = array[..., :3] if array.shape[-1] >= 3 else array
+        if not all(np.array_equal(channels[..., 0], channels[..., c])
+                   for c in range(1, channels.shape[-1])):
+            raise ValueError(
+                f"Mask {path.name} is a true colour image; expected a "
+                "single-channel label map"
+            )
+        array = channels[..., 0]
+
+    if array.ndim != 2:
+        raise ValueError(f"Mask {path.name} is not 2D: {array.shape}")
+
+    if not np.isfinite(array).all():
+        raise ValueError(f"Mask {path.name} contains NaN/inf")
+
+    if not np.array_equal(array, np.round(array)):
+        raise ValueError(f"Mask {path.name} contains non-integer values")
+
+    return array.astype(np.int64)
+
+
+def load_mask(path, fmt):
+    """Load a label map WITHOUT any intensity conversion."""
+    if fmt == "raster":
+        with Image.open(path) as img:
+            # Keep palette indices / raw values; do not convert to 'L'.
+            if img.mode in ("RGBA", "LA"):
+                img = img.convert(img.mode[:-1])
+            array = np.array(img)
+        return to_label_array(array, path), None
+
+    if fmt == "nifti":
+        array, img, _ = read_nifti_2d(path)
+        return to_label_array(array, path), img
+
+    if fmt == "dicom":
+        ds = pydicom.dcmread(str(path))
+        return to_label_array(ds.pixel_array, path), None
+
+    raise ValueError(f"Unsupported mask format: {fmt}")
+
+
+def read_prediction(path, ending):
+    if ending in NIFTI_EXTENSIONS:
+        array, _, _ = read_nifti_2d(path)
+    else:
+        with Image.open(path) as img:
+            array = np.array(img)
+    return to_label_array(array, Path(path))
+
+
+def normalize_uint8(array):
+    array = np.asarray(array, dtype=np.float32)
+
+    if not np.isfinite(array).all():
+        raise ValueError("Image contains NaN or infinite values")
+
+    low, high = float(array.min()), float(array.max())
+    if high <= low:
+        return np.zeros(array.shape, dtype=np.uint8)
+
+    return np.round((array - low) / (high - low) * 255).astype(np.uint8)
+
+
+def check_geometry(image_sitk, mask_sitk):
+    if image_sitk is None or mask_sitk is None:
         return
 
-    stats_by_case = stats_by_case or {}
+    if image_sitk.GetSize() != mask_sitk.GetSize():
+        raise ValueError(
+            f"Image size {image_sitk.GetSize()} != "
+            f"mask size {mask_sitk.GetSize()}"
+        )
 
-    for seg_path in seg_files:
-        case_id = seg_path.name[: -len(file_ending)]
-        image_path = input_dir / f"{case_id}_0000{file_ending}"
-        if not image_path.exists():
-            print(f"{seg_path.name}: no matching input image at {image_path} - skipping")
-            continue
-
-        try:
-            image = load_array(image_path)
-            seg = load_array(seg_path)
-        except Exception as e:
-            print(f"{seg_path.name}: could not read image/segmentation ({e}) - skipping visualization")
-            continue
-
-        is_3d = seg.ndim == 3 and seg.shape[-1] not in (3, 4)
-        image = middle_slice_for_display(image)
-        if image.ndim == 3 and image.shape[-1] in (3, 4):
-            image = image.mean(axis=-1)
-        seg = middle_slice_for_display(seg)
-
-        gt = None
-        if gt_dir is not None:
-            gt_path = gt_dir / f"{case_id}{file_ending}"
-            if gt_path.exists():
-                try:
-                    gt = middle_slice_for_display(load_array(gt_path))
-                except Exception as e:
-                    print(f"{seg_path.name}: could not read GT for visualization ({e})")
-
-        n_panels = 4 if gt is not None else 3
-        fig, axes = plt.subplots(1, n_panels, figsize=(5 * n_panels, 5))
-
-        vmax = max(int(seg.max()), int(gt.max()) if gt is not None else 1, max_label_value)
-
-        axes[0].imshow(image, cmap="gray")
-        axes[0].set_title("Image")
-        axes[0].axis("off")
-
-        panel_idx = 1
-        if gt is not None:
-            axes[panel_idx].imshow(gt, cmap="jet", vmin=0, vmax=vmax)
-            axes[panel_idx].set_title("Ground truth")
-            axes[panel_idx].axis("off")
-            panel_idx += 1
-
-        axes[panel_idx].imshow(seg, cmap="jet", vmin=0, vmax=vmax)
-        axes[panel_idx].set_title("Predicted segmentation")
-        axes[panel_idx].axis("off")
-        panel_idx += 1
-
-        axes[panel_idx].imshow(image, cmap="gray")
-        axes[panel_idx].imshow(np.ma.masked_where(seg == 0, seg), cmap="jet", alpha=0.5, vmin=0, vmax=vmax)
-        axes[panel_idx].set_title("Overlay")
-        axes[panel_idx].axis("off")
-
-        title = case_id + ("  (middle slice of 3D volume)" if is_3d else "")
-        case_stats = stats_by_case.get(case_id)
-        if case_stats:
-            dice_str = "  ".join(
-                f"{k.replace('dice_', '')}={v:.3f}" for k, v in case_stats.items() if k.startswith("dice_") and not np.isnan(v)
+    for name in ("GetSpacing", "GetOrigin", "GetDirection"):
+        a = np.array(getattr(image_sitk, name)())
+        b = np.array(getattr(mask_sitk, name)())
+        if a.shape != b.shape or not np.allclose(a, b, atol=1e-4):
+            raise ValueError(
+                f"Image and mask differ in {name[3:].lower()}: {a} vs {b}"
             )
-            if dice_str:
-                title = f"{title}   Dice: {dice_str}"
-
-        fig.suptitle(title)
-        fig.tight_layout()
-        fig.savefig(save_dir / f"{case_id}.png", dpi=150)
-        plt.close(fig)
-
-    print(f"Saved {len(seg_files)} visualization(s) to {save_dir}")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# ============================================================
+# Ultrasound cropping (DICOM only)
+# ============================================================
+
+def bbox_from_regions(ds, shape):
+    """First valid 2D tissue region from SequenceOfUltrasoundRegions."""
+    regions = getattr(ds, "SequenceOfUltrasoundRegions", None)
+    if not regions:
+        return None
+
+    height, width = shape
+
+    for region in regions:
+        if getattr(region, "RegionSpatialFormat", None) != 1:
+            continue
+
+        coords = [
+            getattr(region, name, None)
+            for name in ("RegionLocationMinX0", "RegionLocationMinY0",
+                         "RegionLocationMaxX1", "RegionLocationMaxY1")
+        ]
+        if None in coords:
+            continue
+
+        x0, y0, x1, y1 = (int(c) for c in coords)
+        x0, y0 = max(0, x0), max(0, y0)
+        x1, y1 = min(width, x1 + 1), min(height, y1 + 1)
+
+        if x1 > x0 and y1 > y0:
+            return x0, y0, x1, y1
+
+    return None
+
+
+def bbox_from_contour(gray, min_area=10000):
+    """Fallback: bounding box of the largest bright connected region."""
+    _, threshold = cv2.threshold(
+        normalize_uint8(gray), 10, 255, cv2.THRESH_BINARY
+    )
+    contours, _ = cv2.findContours(
+        threshold, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    boxes = []
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        if w * h > min_area:
+            boxes.append((x, y, x + w, y + h))
+
+    if not boxes:
+        return None
+
+    return max(boxes, key=lambda b: (b[2] - b[0]) * (b[3] - b[1]))
+
+
+def get_crop_bbox(ds, gray):
+    """Returns (bbox, method) or (None, None)."""
+    bbox = bbox_from_regions(ds, gray.shape)
+    if bbox is not None:
+        return bbox, "us_regions"
+
+    bbox = bbox_from_contour(gray)
+    if bbox is not None:
+        return bbox, "contour"
+
+    return None, None
+
+
+# ============================================================
+# Model input
+# ============================================================
+
+def write_model_input(array, base_path, ending, intensity, spacing):
+    """Write one 2D image in the model's input format."""
+    if intensity == "minmax":
+        data = normalize_uint8(array)
+    else:
+        data = np.asarray(array, dtype=np.float32)
+        if not np.isfinite(data).all():
+            raise ValueError("Image contains NaN or infinite values")
+
+    target = str(base_path) + ending
+
+    if ending in RASTER_EXTENSIONS:
+        if intensity == "raw":
+            if (data.min() < 0 or data.max() > 255
+                    or not np.array_equal(data, np.round(data))):
+                raise ValueError(
+                    "Raw intensities do not fit uint8 for a "
+                    f"{ending} model; use --intensity minmax"
+                )
+            data = data.astype(np.uint8)
+        Image.fromarray(data).save(target)
+        return
+
+    if ending in NIFTI_EXTENSIONS:
+        # nnU-Net's SimpleITKIO treats 2D NIfTI as a single slice and adds
+        # the dummy 999 spacing itself.
+        img = sitk.GetImageFromArray(data.astype(np.float32))
+        img.SetSpacing(tuple(float(s) for s in spacing))
+        sitk.WriteImage(img, target)
+        return
+
+    raise ValueError(f"Unsupported model input extension: {ending}")
+
+
+# ============================================================
+# Metrics
+# ============================================================
+
+def calculate_metrics(prediction, ground_truth):
+    pred = np.asarray(prediction, dtype=bool)
+    gt = np.asarray(ground_truth, dtype=bool)
+
+    if pred.shape != gt.shape:
+        raise ValueError(f"Shape mismatch: pred={pred.shape}, gt={gt.shape}")
+
+    tp = int(np.logical_and(pred, gt).sum())
+    fp = int(np.logical_and(pred, ~gt).sum())
+    fn = int(np.logical_and(~pred, gt).sum())
+    tn = int(np.logical_and(~pred, ~gt).sum())
+
+    def ratio(num, den):
+        return num / den if den else np.nan
+
+    both_empty = (tp + fp + fn) == 0
+
+    return {
+        # Correctly predicting "nothing" counts as a perfect overlap
+        # instead of NaN (which pandas would silently drop from the mean).
+        "dice": 1.0 if both_empty else 2 * tp / (2 * tp + fp + fn),
+        "iou": 1.0 if both_empty else tp / (tp + fp + fn),
+        "sensitivity": ratio(tp, tp + fn),
+        "specificity": ratio(tn, tn + fp),
+        "precision": ratio(tp, tp + fp),
+        "tp": tp, "fp": fp, "fn": fn, "tn": tn,
+        "gt_positive_pixels": int(gt.sum()),
+        "pred_positive_pixels": int(pred.sum()),
+        "empty_case": both_empty,
+    }
+
+
+# ============================================================
+# Output utilities
+# ============================================================
+
+def save_nifti(array, path, reference=None, spacing=None):
+    """Save a 2D array; copy geometry from a compatible reference image."""
+    array = np.asarray(array)
+
+    if reference is not None:
+        size = reference.GetSize()
+        if reference.GetDimension() == 2 and array.shape[::-1] == size:
+            img = sitk.GetImageFromArray(array)
+            img.CopyInformation(reference)
+            sitk.WriteImage(img, str(path))
+            return
+        if (reference.GetDimension() == 3 and size[2] == 1
+                and array.shape[::-1] == size[:2]):
+            img = sitk.GetImageFromArray(array[np.newaxis])
+            img.CopyInformation(reference)
+            sitk.WriteImage(img, str(path))
+            return
+
+    img = sitk.GetImageFromArray(array)
+    if spacing is not None:
+        img.SetSpacing(tuple(float(s) for s in spacing))
+    sitk.WriteImage(img, str(path))
+
+
+def save_overlay(image, prediction, ground_truth, path, title):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.imshow(normalize_uint8(image), cmap="gray")
+
+    if ground_truth.any():
+        ax.contour(ground_truth.astype(np.uint8), levels=[0.5],
+                   colors="lime", linewidths=1.5)
+    if prediction.any():
+        ax.contour(prediction.astype(np.uint8), levels=[0.5],
+                   colors="red", linewidths=1.5)
+
+    ax.legend(
+        handles=[Line2D([0], [0], color="lime", label="Ground truth"),
+                 Line2D([0], [0], color="red", label="Prediction")],
+        loc="lower right", fontsize=8,
+    )
+    ax.set_title(title)
+    ax.axis("off")
+
+    fig.tight_layout()
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def unique_output_stem(relative_path, used):
+    parts = list(relative_path.parent.parts) + [image_stem(relative_path)]
+    stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", "__".join(parts)) or "image"
+
+    candidate, n = stem, 2
+    while candidate.casefold() in used:
+        candidate = f"{stem}_{n}"
+        n += 1
+
+    used.add(candidate.casefold())
+    return candidate
+
+
+# ============================================================
 # Main
-# ─────────────────────────────────────────────────────────────────────────────
+# ============================================================
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Batch nnU-Net v2 inference with evaluation.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+
+    parser.add_argument("--image", required=True, help="Original image folder.")
+    parser.add_argument("--mask", required=True, help="Ground-truth mask folder.")
+    parser.add_argument("--model", required=True,
+                        help="nnU-Net trainer folder (contains dataset.json).")
+    parser.add_argument("--output", required=True, help="Output folder.")
+
+    parser.add_argument("--fold", nargs="+", default=["0"],
+                        help="Fold number(s), 'all' (fold_all) or 'ensemble'.")
+    parser.add_argument("--checkpoint", default="checkpoint_final.pth")
+
+    parser.add_argument("--gt-label", type=int, default=1,
+                        help="Foreground label value in the ground-truth masks.")
+    parser.add_argument("--pred-label", type=int, default=None,
+                        help="Foreground label in the model output "
+                             "(default: same as --gt-label).")
+
+    parser.add_argument("--intensity", choices=["minmax", "raw"],
+                        default="minmax",
+                        help="minmax: rescale each image to 0-255 (old "
+                             "behaviour). raw: pass intensities unchanged. "
+                             "Must match how the training data was made.")
+    parser.add_argument("--spacing", type=float, nargs=2, default=None,
+                        metavar=("SX", "SY"),
+                        help="Pixel spacing written to NIfTI model inputs. "
+                             "Default: source spacing for NIfTI images, "
+                             "1.0 1.0 otherwise.")
+
+    parser.add_argument("--no-crop", action="store_true",
+                        help="Disable ultrasound cropping for DICOM.")
+    parser.add_argument("--metrics-region", choices=["full", "crop"],
+                        default="full",
+                        help="Compute metrics on the full image or only "
+                             "inside the crop box (affects specificity).")
+
+    parser.add_argument("--no-mirroring", action="store_true",
+                        help="Disable test-time mirroring (faster).")
+    parser.add_argument("--no-overlays", action="store_true")
+    parser.add_argument("--verbose", action="store_true")
+
+    return parser.parse_args()
+
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--dataset", type=str, required=True,
-                         help="Dataset id: '6', '006', or the full 'Dataset006_NEUSBrainSkull' name. "
-                              "Everything else is auto-detected from this.")
-    parser.add_argument("--input_dir", type=Path, default=None,
-                         help="Default: <nnUNet_raw>/<dataset>/imagesTs")
-    parser.add_argument("--output_dir", type=Path, default=None,
-                         help="Default: ./<dataset_name>_predictions")
-    parser.add_argument("--gt_dir", type=Path, default=None,
-                         help="Default: <nnUNet_raw>/<dataset>/labelsTs")
-    parser.add_argument("--vis_dir", type=Path, default=None,
-                         help="Default: <output_dir>/visualizations")
-    parser.add_argument("--folds", type=str, nargs="+", default=["all"],
-                         help="Folds to use, e.g. 0 1 2 3 4, or 'all'")
-    parser.add_argument("--trainer", type=str, default=None,
-                         help="Override auto-detected trainer (only needed if multiple trained variants exist)")
-    parser.add_argument("--plans", type=str, default=None,
-                         help="Override auto-detected plans identifier (e.g. nnUNetPlans)")
-    parser.add_argument("--configuration", type=str, default=None,
-                         help="Override auto-detected configuration (2d, 3d_fullres, 3d_lowres, 3d_cascade_fullres)")
-    parser.add_argument("--checkpoint_name", type=str, default="checkpoint_final.pth")
-    parser.add_argument("--skip_stats", action="store_true",
-                         help="Skip Dice statistics computation entirely (e.g. if you have no ground truth for this run).")
-    args = parser.parse_args()
+    args = parse_args()
+    pred_label = args.pred_label if args.pred_label is not None else args.gt_label
 
-    raw_dataset_dir = resolve_dataset_folder(Path(nnUNet_raw), args.dataset)
-    results_dataset_dir = resolve_dataset_folder(Path(nnUNet_results), args.dataset)
-    dataset_name = raw_dataset_dir.name
-    print(f"Resolved dataset: {dataset_name}")
+    image_root = Path(args.image).resolve()
+    mask_root = Path(args.mask).resolve()
+    model_path = Path(args.model).resolve()
+    output_root = Path(args.output).resolve()
 
-    model_variant_dir = resolve_model_variant(results_dataset_dir, args.trainer, args.plans, args.configuration)
-    print(f"Using trained model variant: {model_variant_dir.name}")
+    for name, path in [("Image folder", image_root),
+                       ("Mask folder", mask_root),
+                       ("Model folder", model_path)]:
+        if not path.is_dir():
+            raise NotADirectoryError(f"{name} does not exist: {path}")
 
-    dataset_json = load_dataset_json(raw_dataset_dir, model_variant_dir)
-    file_ending = dataset_json.get("file_ending", ".png")
-    labels = dataset_json["labels"]
-    print(f"File format: {file_ending}   Labels: {labels}")
+    # Fail fast on model problems before touching any data.
+    config, ending = get_model_config(model_path)
+    folds = resolve_folds(model_path, args.fold, args.checkpoint)
+    configuration, train_spacing = get_training_spacing(model_path)
 
-    input_dir = args.input_dir or (raw_dataset_dir / "imagesTs")
-    output_dir = args.output_dir or Path(f"./{dataset_name}_predictions")
-    gt_dir = args.gt_dir or (raw_dataset_dir / "labelsTs")
-    vis_dir = args.vis_dir or (output_dir / "visualizations")
+    prediction_dir = output_root / "predictions"
+    overlay_dir = output_root / "overlays"
+    image_output_dir = output_root / "images"
+    for folder in (prediction_dir, overlay_dir, image_output_dir):
+        folder.mkdir(parents=True, exist_ok=True)
 
-    folds = tuple(f if f == "all" else int(f) for f in args.folds)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    run_inference(
-        input_dir,
-        output_dir,
-        model_variant_dir,
-        results_dataset_dir,
-        folds,
-        checkpoint_name=args.checkpoint_name,
+    print("=" * 70)
+    print("BATCH nnU-Net INFERENCE")
+    print("=" * 70)
+    print(f"Images:        {image_root}")
+    print(f"Masks:         {mask_root}")
+    print(f"Model:         {model_path}")
+    print(f"Output:        {output_root}")
+    print(f"Input type:    {ending}")
+    print(f"Folds:         {folds}  ({args.checkpoint})")
+    print(f"Intensity:     {args.intensity}")
+    if train_spacing is not None:
+        print(f"Train spacing: {train_spacing}  ({configuration})")
+    print(f"Labels:        GT={args.gt_label}, prediction={pred_label}")
+    print(f"Device:        {device}")
+    print("=" * 70)
+
+    # Don't treat masks or previous outputs inside the image folder as images.
+    image_files = list_supported_files(
+        image_root, exclude=[mask_root, output_root]
     )
+    mask_files = list_supported_files(mask_root, exclude=[output_root])
+    print(f"Found {len(image_files)} images, {len(mask_files)} masks")
 
-    max_label_value = max(
-        (v if isinstance(v, int) else max(v) for v in labels.values() if isinstance(v, (int, list, tuple))),
-        default=1,
+    if not image_files:
+        raise RuntimeError("No supported images found.")
+
+    exact_index, stripped_index = build_mask_indices(mask_files)
+    mask_formats = dict(mask_files)
+
+    # One log entry per image, updated as it moves through the pipeline.
+    log = {}
+
+    def set_status(image_path, status, message="", mask_path=None):
+        entry = log.setdefault(str(image_path), {
+            "image": str(image_path), "mask": "", "status": "", "message": ""
+        })
+        if mask_path is not None:
+            entry["mask"] = str(mask_path)
+        entry["status"] = status
+        entry["message"] = message
+
+    cases = []
+    for image_path, image_fmt in image_files:
+        try:
+            mask_path = match_mask(image_path, image_root, mask_root,
+                                   exact_index, stripped_index)
+        except Exception as exc:
+            set_status(image_path, "ERROR", str(exc))
+            print(f"[ERROR] {image_path.name}: {exc}")
+            continue
+
+        if mask_path is None:
+            set_status(image_path, "SKIPPED", "No matching mask")
+            print(f"[SKIP]  No mask for {image_path.name}")
+            continue
+
+        cases.append((image_path, image_fmt, mask_path))
+
+    print(f"Matched cases: {len(cases)}")
+    if not cases:
+        raise RuntimeError("No matching image-mask pairs were found.")
+
+    from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
+
+    results = []
+    used_stems = set()
+
+    with tempfile.TemporaryDirectory() as temp:
+        temp = Path(temp)
+        nnunet_input = temp / "input"
+        nnunet_output = temp / "prediction"
+        nnunet_input.mkdir()
+        nnunet_output.mkdir()
+
+        case_mapping = {}
+
+        # ----------------------------------------------------
+        # Prepare inputs
+        # ----------------------------------------------------
+        for i, (image_path, image_fmt, mask_path) in enumerate(cases):
+            case_name = f"case_{i:05d}"
+
+            try:
+                image = load_image(image_path, image_fmt)
+                mask, mask_sitk = load_mask(mask_path, mask_formats[mask_path])
+
+                if image["array"].shape != mask.shape:
+                    raise ValueError(
+                        f"Image shape {image['array'].shape} != "
+                        f"mask shape {mask.shape}"
+                    )
+                check_geometry(image["sitk"], mask_sitk)
+
+                if args.gt_label not in mask:
+                    print(f"[INFO]  {image_path.name}: mask has no label "
+                          f"{args.gt_label} (values: {np.unique(mask)[:10]})")
+
+                height, width = image["array"].shape
+                bbox, crop_method = (0, 0, width, height), "none"
+
+                if image_fmt == "dicom" and not args.no_crop:
+                    detected, method = get_crop_bbox(image["ds"], image["array"])
+                    if detected is not None:
+                        bbox, crop_method = detected, method
+                    else:
+                        print(f"[INFO]  {image_path.name}: no ultrasound "
+                              "region found; using full image.")
+
+                x0, y0, x1, y1 = bbox
+
+                spacing = (args.spacing or image["spacing"] or (1.0, 1.0))
+
+                write_model_input(
+                    image["array"][y0:y1, x0:x1],
+                    nnunet_input / f"{case_name}_0000",
+                    ending, args.intensity, spacing,
+                )
+
+                case_mapping[case_name] = {
+                    "image_path": image_path,
+                    "image_fmt": image_fmt,
+                    "mask_path": mask_path,
+                    "mask_fmt": mask_formats[mask_path],
+                    "image": image["array"],
+                    "image_sitk": image["sitk"],
+                    "spacing": spacing,
+                    "mask": mask,
+                    "bbox": bbox,
+                    "crop_method": crop_method,
+                }
+
+                set_status(image_path, "PREPARED", mask_path=mask_path)
+                print(f"[PREP]  {image_path.name} ({image_fmt}, "
+                      f"crop={crop_method} {bbox})")
+
+            except Exception as exc:
+                set_status(image_path, "ERROR", f"Preparation: {exc}",
+                           mask_path=mask_path)
+                print(f"[ERROR] Preparing {image_path.name}: {exc}")
+                if args.verbose:
+                    traceback.print_exc()
+
+        if not case_mapping:
+            raise RuntimeError("No images could be prepared for inference.")
+
+        # ----------------------------------------------------
+        # Inference
+        # ----------------------------------------------------
+        predictor = nnUNetPredictor(
+            tile_step_size=0.5,
+            use_gaussian=True,
+            use_mirroring=not args.no_mirroring,
+            perform_everything_on_device=(device.type == "cuda"),
+            device=device,
+            verbose=args.verbose,
+            verbose_preprocessing=args.verbose,
+            allow_tqdm=True,
+        )
+
+        predictor.initialize_from_trained_model_folder(
+            str(model_path),
+            use_folds=folds,
+            checkpoint_name=args.checkpoint,
+        )
+
+        print(f"\nRunning inference on {len(case_mapping)} cases...")
+
+        predictor.predict_from_files(
+            str(nnunet_input),
+            str(nnunet_output),
+            save_probabilities=False,
+            overwrite=True,
+            num_processes_preprocessing=1,
+            num_processes_segmentation_export=1,
+            folder_with_segs_from_prev_stage=None,
+        )
+
+        prediction_index = {
+            p.name[:-len(ending)]: p
+            for p in nnunet_output.iterdir()
+            if p.name.lower().endswith(ending)
+        }
+
+        # ----------------------------------------------------
+        # Restore, evaluate, save
+        # ----------------------------------------------------
+        for case_name, info in case_mapping.items():
+            image_path = info["image_path"]
+
+            try:
+                if case_name not in prediction_index:
+                    raise FileNotFoundError(f"No prediction for {case_name}")
+
+                pred_crop = read_prediction(prediction_index[case_name], ending)
+
+                x0, y0, x1, y1 = info["bbox"]
+                expected = (y1 - y0, x1 - x0)
+                if pred_crop.shape != expected:
+                    raise ValueError(f"Prediction shape {pred_crop.shape} != "
+                                     f"crop shape {expected}")
+
+                prediction = np.zeros(info["image"].shape, dtype=np.uint8)
+                prediction[y0:y1, x0:x1] = pred_crop
+
+                pred_binary = prediction == pred_label
+                gt_binary = info["mask"] == args.gt_label
+
+                gt_outside_crop = int(gt_binary.sum()
+                                      - gt_binary[y0:y1, x0:x1].sum())
+
+                if args.metrics_region == "crop":
+                    metrics = calculate_metrics(pred_binary[y0:y1, x0:x1],
+                                                gt_binary[y0:y1, x0:x1])
+                else:
+                    metrics = calculate_metrics(pred_binary, gt_binary)
+
+                stem = unique_output_stem(
+                    image_path.relative_to(image_root), used_stems
+                )
+                prediction_path = prediction_dir / f"{stem}.nii.gz"
+                overlay_path = overlay_dir / f"{stem}.png"
+                image_nifti_path = image_output_dir / f"{stem}.nii.gz"
+
+                save_nifti(prediction, prediction_path,
+                           info["image_sitk"], info["spacing"])
+
+                if info["image_sitk"] is not None:
+                    sitk.WriteImage(info["image_sitk"], str(image_nifti_path))
+                else:
+                    save_nifti(info["image"].astype(np.float32),
+                               image_nifti_path, spacing=info["spacing"])
+
+                if not args.no_overlays:
+                    save_overlay(
+                        info["image"], pred_binary, gt_binary, overlay_path,
+                        f"{image_path.name}  Dice={metrics['dice']:.3f}",
+                    )
+
+                metrics.update({
+                    "case": case_name,
+                    "image_name": image_path.name,
+                    "image": str(image_path),
+                    "mask": str(info["mask_path"]),
+                    "image_format": info["image_fmt"],
+                    "mask_format": info["mask_fmt"],
+                    "prediction": str(prediction_path),
+                    "overlay": "" if args.no_overlays else str(overlay_path),
+                    "crop_method": info["crop_method"],
+                    "crop_x0": x0, "crop_y0": y0,
+                    "crop_x1": x1, "crop_y1": y1,
+                    "gt_pixels_outside_crop": gt_outside_crop,
+                })
+                results.append(metrics)
+
+                set_status(image_path, "SUCCESS")
+
+                warn = (f"  [GT outside crop: {gt_outside_crop}px]"
+                        if gt_outside_crop else "")
+                print(f"[DONE]  {image_path.name}: Dice={metrics['dice']:.4f}, "
+                      f"IoU={metrics['iou']:.4f}{warn}")
+
+            except Exception as exc:
+                set_status(image_path, "ERROR", f"Evaluation: {exc}")
+                print(f"[ERROR] Evaluating {image_path.name}: {exc}")
+                if args.verbose:
+                    traceback.print_exc()
+
+    # ========================================================
+    # Export
+    # ========================================================
+    log_df = pd.DataFrame(list(log.values()))
+    log_path = output_root / "processing_log.csv"
+    log_df.to_csv(log_path, index=False)
+
+    status_counts = log_df["status"].value_counts().to_dict()
+
+    if not results:
+        print("\nNo valid predictions were evaluated.")
+        print(f"See processing log: {log_path}")
+        return
+
+    results_df = pd.DataFrame(results)
+    leading = ["case", "image_name"] + METRIC_COLUMNS
+    results_df = results_df[leading + [c for c in results_df.columns
+                                       if c not in leading]]
+
+    statistics_path = output_root / "prediction_statistics.csv"
+    results_df.to_csv(statistics_path, index=False)
+
+    mean_df = results_df[METRIC_COLUMNS].mean().to_frame().T
+    mean_df["n_cases"] = len(results_df)
+    mean_df["n_empty_cases"] = int(results_df["empty_case"].sum())
+    mean_path = output_root / "mean_statistics.csv"
+    mean_df.to_csv(mean_path, index=False)
+
+    summary_df = results_df[METRIC_COLUMNS].agg(
+        ["mean", "std", "median", "min", "max", "count"]
     )
+    summary_path = output_root / "summary_statistics.csv"
+    summary_df.to_csv(summary_path)
 
-    stats_rows: List[dict] = []
-    stats_lookup: Dict[str, dict] = {}
-    if not args.skip_stats:
-        if not gt_dir.exists():
-            print(f"Ground truth folder {gt_dir} does not exist - skipping statistics. "
-                  f"Pass --gt_dir explicitly or --skip_stats to silence this.")
-        else:
-            stats_rows = compute_statistics(output_dir, gt_dir, labels, file_ending)
-            save_statistics_csv(stats_rows, output_dir / "statistics.csv")
-            print_summary_statistics(stats_rows)
-            stats_lookup = statistics_by_case(stats_rows)
+    print("\n" + "=" * 70)
+    print("BATCH INFERENCE FINISHED")
+    print("=" * 70)
+    print(f"Evaluated: {status_counts.get('SUCCESS', 0)}")
+    print(f"Skipped:   {status_counts.get('SKIPPED', 0)}")
+    print(f"Errors:    {status_counts.get('ERROR', 0)}")
+    print(f"Empty GT + empty prediction (Dice=1): "
+          f"{int(results_df['empty_case'].sum())}")
 
-    plot_results(
-        input_dir,
-        output_dir,
-        vis_dir,
-        file_ending,
-        gt_dir=gt_dir if gt_dir.exists() else None,
-        stats_by_case=stats_lookup,
-        max_label_value=max_label_value,
-    )
+    print("\nSummary:")
+    print(summary_df.to_string(float_format=lambda v: f"{v:.4f}"))
+
+    print("\nOutput files:")
+    print(f"Predictions: {prediction_dir}")
+    print(f"Overlays:    {overlay_dir}")
+    print(f"Images:      {image_output_dir}")
+    print(f"Per case:    {statistics_path}")
+    print(f"Mean:        {mean_path}")
+    print(f"Summary:     {summary_path}")
+    print(f"Log:         {log_path}")
 
 
 if __name__ == "__main__":
