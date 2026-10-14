@@ -13,6 +13,13 @@ nnUNet_raw/
 nnUNet_preprocessed/
 nnUNet_results/
 
+# Model weights: downloaded from Google Drive (see README), not stored in git
+models/**/*.keras
+models/**/*.zip
+models/**/*.pth
+models/**/*.npz
+models/nnunet/Dataset*/
+
 # Outputs
 outputs/
 logs/

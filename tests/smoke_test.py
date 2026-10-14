@@ -171,11 +171,12 @@ def stage_classification(work: Path, rng: np.random.Generator) -> None:
 
     models = {
         "incl_excl": (REPO / "models/classifiers/incl_excl/cp.keras", ["exclude", "include"], "include"),
-        "cor_sag": (REPO / "models/classifiers/cor_sag/cp.keras", ["Coronal", "Saggital"], "Saggital"),
+        "mid_sag": (REPO / "models/classifiers/mid_sagittal_classifier/model.keras", ["not_mid_saggital", "mid_saggital"], "mid_saggital"),
     }
     for name, (model_path, class_names, positive) in models.items():
         if not model_path.exists():
-            report(stage, f"{name}: model file", "FAIL", f"{model_path} not found")
+            report(stage, f"{name}: model file", "SKIP",
+                   f"{model_path.relative_to(REPO)} not found (download it, see README -> Models)")
             continue
         out_csv = work / f"cls_{name}.csv"
         ok, secs = run([sys.executable, SRC / "classification/classify.py",

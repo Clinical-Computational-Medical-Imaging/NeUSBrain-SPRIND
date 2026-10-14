@@ -77,9 +77,9 @@ python tests/smoke_test.py --stages classification --workdir "$OUT/smoke_classif
 
 echo "### Classification" >> "$RESULTS"; echo >> "$RESULTS"
 python tests/evaluate.py classifier --csv "$PLANE_CSV" \
-    --model models/classifiers/cor_sag/cp.keras --class-names Coronal Saggital \
-    --label-map mid_saggital=Saggital relevant_coronal=Coronal \
-    --max-images "$MAX_CLS_IMAGES" --name "Coronal / sagittal classifier" --out "$RESULTS"
+    --model models/classifiers/mid_sagittal_classifier/model.keras --class-names not_mid_saggital mid_saggital \
+    --label-map mid_saggital=mid_saggital relevant_coronal=not_mid_saggital not_relevant=not_mid_saggital \
+    --max-images "$MAX_CLS_IMAGES" --name "Mid-sagittal classifier" --out "$RESULTS"
 if [ -n "$INCL_CSV" ]; then
     python tests/evaluate.py classifier --csv "$INCL_CSV" \
         --model models/classifiers/incl_excl/cp.keras --class-names exclude include \

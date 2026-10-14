@@ -11,9 +11,10 @@ different environments).
                 06_measure_vermis.py): bias, MAE, limits of agreement, r
 
 Usage:
-    python tests/evaluate.py classifier --csv labels.csv --model models/classifiers/cor_sag/cp.keras \\
-        --class-names Coronal Saggital --label-map mid_saggital=Saggital relevant_coronal=Coronal \\
-        --name "Coronal / sagittal" --out results.md
+    python tests/evaluate.py classifier --csv labels.csv --model models/classifiers/mid_sagittal_classifier/model.keras \\
+        --class-names not_mid_saggital mid_saggital \\
+        --label-map mid_saggital=mid_saggital relevant_coronal=not_mid_saggital not_relevant=not_mid_saggital \\
+        --name "Mid-sagittal" --out results.md
     python tests/evaluate.py seg --pred-dir preds/ --gt-dir labelsTs/ --name "Cerebellum" --out results.md
     python tests/evaluate.py vermis --pred-csv pred/measurements_summary.csv \\
         --gt-csv gt/measurements_summary.csv --out results.md

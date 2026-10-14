@@ -19,7 +19,7 @@ images**. The pipeline has three stages:
  │ 1a include / exclude │   EfficientNet, 288×256 input
  └──────────┬───────────┘
             ▼
- ┌──────────────────────┐   models/classifiers/mid_sag/cp.keras
+ ┌──────────────────────┐   models/classifiers/mid_sagittal_classifier/model.keras
  │ 1b mid-sagittal?     │   mid_saggital / not_mid_saggital
  └──────────┬───────────┘
             ▼
@@ -42,12 +42,12 @@ images**. The pipeline has three stages:
 
 ```
 .
-├── models/
+├── models/                           # not in git: download, see Models
 │   ├── classifiers/
 │   │   ├── incl_excl/cp.keras        # include / exclude classifier (TensorFlow)
-│   │   └── mid_sag/cp.keras          # mid-sagittal / not mid-sagittal classifier (TensorFlow)
-│   ├── nnunet/                       # nnU-Net results folders go here (see below)
-│   └── ssm/                          # PCA shape model (pca_shape_model.npz) goes here
+│   │   └── mid_sagittal_classifier/model.keras  # mid-sagittal / not mid-sagittal classifier (TensorFlow)
+│   ├── nnunet/                       # nnU-Net results folders (unzipped)
+│   └── ssm/                          # PCA shape model (pca_shape_model.npz)
 ├── requirements/                     # one requirements file per environment
 ├── src/
 │   ├── classification/
@@ -100,16 +100,38 @@ pip install -r requirements/vermis_height.txt
 | Stage | Model | Location | Input | Output |
 |---|---|---|---|---|
 | 1a | Include / exclude CNN (Keras, EfficientNet) | `models/classifiers/incl_excl/cp.keras` | RGB 288×256 | `exclude`, `include` |
-| 1b | Mid-sagittal plane CNN (Keras) | `models/classifiers/mid_sag/cp.keras` | RGB | `not_mid_saggital`, `mid_saggital` |
-| 2a | Skull segmentation (nnU-Net v2, `2d`) | `models/nnunet/Dataset009_*/nnUNetTrainer__nnUNetPlans__2d/` | US image | 1 = skull |
+| 1b | Mid-sagittal plane CNN (Keras) | `models/classifiers/mid_sagittal_classifier/model.keras` | RGB | `not_mid_saggital`, `mid_saggital` |
+| 2a | Skull segmentation (nnU-Net v2, `2d`) | `models/nnunet/Dataset009_Tuechert_impr_neus/nnUNetTrainer__nnUNetPlans__2d/` | US image | 1 = skull |
 | 2b | Cerebellum segmentation (nnU-Net v2, `2d`) | `models/nnunet/Dataset010_midsagittal_cerebellum/nnUNetTrainer__nnUNetPlans__2d/` | mid-sagittal US image | 1 = cerebellum |
 | 3 | Sagittal PCA shape model | `models/ssm/sagittal/pca_shape_model.npz` | labelmap (label 2) | 100 fitted landmarks |
 
-> The nnU-Net results folders and the PCA shape model are too large or
-> data-derived to keep in git. Copy them into `models/nnunet/` and
-> `models/ssm/` as shown above. You need the complete nnU-Net folder
-> (`dataset.json`, `plans.json`, `fold_*/checkpoint_final.pth`).
-> To rebuild them, see [Training](#training).
+### Download
+
+The trained models are too large for git. Download them from
+**[Google Drive](https://drive.google.com/drive/folders/1CU90BYpvkqjq5aVl4aQjy9FNaKHBUjY_?usp=drive_link)** and place them in `models/` as in the table above:
+
+```
+models/
+├── classifiers/
+│   ├── incl_excl/cp.keras
+│   └── mid_sagittal_classifier/model.keras
+└── nnunet/
+    ├── nnunet_us_cerebellum_segmentation.zip
+    └── nnunet_us_skull_segmentation.zip
+```
+
+Then unzip the two nnU-Net models in place:
+
+```bash
+cd models/nnunet
+unzip nnunet_us_cerebellum_segmentation.zip   # -> Dataset010_midsagittal_cerebellum/
+unzip nnunet_us_skull_segmentation.zip        # -> Dataset009_Tuechert_impr_neus/
+cd ../..
+```
+
+Each nnU-Net folder must contain `dataset.json`, `plans.json` and
+`fold_all/checkpoint_final.pth`. To train the models yourself, see
+[Training](#training).
 
 ---
 
@@ -154,7 +176,7 @@ class that sets `included=True`:
 ```bash
 python src/classification/classify.py \
     --input /path/to/images \
-    --tf-model models/classifiers/mid_sag/cp.keras \
+    --tf-model models/classifiers/mid_sagittal_classifier/model.keras \
     --class-names not_mid_saggital mid_saggital \
     --positive-class mid_saggital \
     --harmonized-dir outputs/harmonized \
