@@ -107,10 +107,13 @@ pip install -r requirements/vermis_height.txt
 
 ### Download
 
-The trained models are too large for git. Download them from
-**[Google Drive](https://drive.google.com/drive/folders/1CU90BYpvkqjq5aVl4aQjy9FNaKHBUjY_?usp=drive_link)** and place them in `models/` as in the table above:
+The trained models are too large for git and are archived on Zenodo with a DOI:
 
-```
+DOI: 10.5281/zenodo.23400169 — NeUSBrain-SPRIND model weights, Apache-2.0. This DOI always resolves to the latest version; cite 10.5281/zenodo.23400170 to pin v1.0.0 exactly. Archived release: v1.0.0
+
+Download the four files from the Zenodo record and place them in models/ as in the table above:
+
+
 models/
 ├── classifiers/
 │   ├── incl_excl/cp.keras
@@ -118,20 +121,17 @@ models/
 └── nnunet/
     ├── nnunet_us_cerebellum_segmentation.zip
     └── nnunet_us_skull_segmentation.zip
-```
-
 Then unzip the two nnU-Net models in place:
 
-```bash
+
+
 cd models/nnunet
 unzip nnunet_us_cerebellum_segmentation.zip   # -> Dataset010_midsagittal_cerebellum/
 unzip nnunet_us_skull_segmentation.zip        # -> Dataset009_Tuechert_impr_neus/
 cd ../..
-```
+Each nnU-Net folder must contain dataset.json, plans.json and fold_all/checkpoint_final.pth. To train the models yourself, see Training.
 
-Each nnU-Net folder must contain `dataset.json`, `plans.json` and
-`fold_all/checkpoint_final.pth`. To train the models yourself, see
-[Training](#training).
+Verify the downloads against the checksums shown on the Zenodo record before use.
 
 ---
 
