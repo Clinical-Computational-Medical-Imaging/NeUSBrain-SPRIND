@@ -19,32 +19,32 @@ keywords:
   - statistical shape model
   - nnU-Net
 authors:
-  - family-names: Reinke
-    given-names: Zoe
+  - family-names: "Reinke"
+    given-names: "Zoe"
     orcid: "https://orcid.org/0009-0009-8288-3508"
     affiliation: "University Hospital Augsburg"
   - family-names: "Gastreich de Llanes"
-    given-names: "Elina V."
+    given-names: "Elina Viktoria"
     affiliation: "University Hospital Augsburg"
-  - family-names: Langer
-    given-names: Valentin
+  - family-names: "Langer"
+    given-names: "Valentin"
     affiliation: "University Hospital Augsburg"
-  - family-names: Laub
-    given-names: Florentine
+  - family-names: "Karg"
+    given-names: "Julian Valentin"
     affiliation: "University Hospital Augsburg"
-  - family-names: Karg
-    given-names: "Juliana V."
+  - family-names: "Laub"
+    given-names: "Florentine"
     affiliation: "University Hospital Augsburg"
-  - family-names: "Tuechert-Knoll"
-    given-names: "Stefanie E."
+  - family-names: "Tüchert-Knoll"
+    given-names: "Stefanie Eliane"
     orcid: "https://orcid.org/0000-0002-7952-1380"
     affiliation: "University Hospital Augsburg"
-  - family-names: Fahlbusch
-    given-names: "Fabian B."
+  - family-names: "Fahlbusch"
+    given-names: "Fabian Benedikt"
     orcid: "https://orcid.org/0000-0001-5480-0204"
     affiliation: "University of Augsburg and University Hospital Augsburg"
-  - family-names: Wendler
-    given-names: Thomas
+  - family-names: "Wendler"
+    given-names: "Thomas"
     orcid: "https://orcid.org/0000-0002-0915-0510"
     affiliation: "University of Augsburg and University Hospital Augsburg"
 references:
@@ -58,8 +58,8 @@ references:
       - family-names: "Gastreich de Llanes"
         given-names: "Elina V."
       - family-names: Karg
-        given-names: "Juliana V."
-      - family-names: "Tuechert-Knoll"
+        given-names: "Julian V."
+      - family-names: "Tüchert-Knoll"
         given-names: "Stefanie E."
       - family-names: Laub
         given-names: Florentine
@@ -67,3 +67,18 @@ references:
         given-names: Thomas
       - family-names: Fahlbusch
         given-names: "Fabian B."
+  - type: conference-paper
+    title: "Learning Anatomical Variability: Statistical Shape Models for Vertebral Joint Pose Estimation"
+    doi: 10.1515/cdbme-2026-0140
+    year: 2026
+    authors:
+      - family-names: "Gastreich de Llanes"
+        given-names: Elina
+      - family-names: "Wördehoff"
+        given-names: Melina
+      - family-names: "Förner"
+        given-names: Lukas
+      - family-names: Decker
+        given-names: "Josua A."
+      - family-names: Wendler
+        given-names: Thomas
