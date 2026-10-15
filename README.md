@@ -291,11 +291,11 @@ Outputs in `--output`:
 |---|---|
 | `predictions/` | predicted label maps (`.nii.gz`) |
 | `overlays/` | PNGs, green = ground truth, red = prediction |
-| `prediction_statistics.csv` | Dice, IoU, sensitivity, specificity, precision per image |
+| `prediction_statistics.csv` | , IoU, sensitivity, specificity, precision per image |
 | `summary_statistics.csv` | mean / std / median / min / max per metric |
 | `processing_log.csv` | status of every image (success, skipped, error) |
 
-Dice and IoU are set to 1 when both the mask and the prediction are empty.
+ and IoU are set to 1 when both the mask and the prediction are empty.
 Precision is undefined (and left out of the summary) when the prediction is
 empty.
 
@@ -411,12 +411,12 @@ cp -r outputs/ssm_work/pca/sagittal models/ssm/
 | 02 | `02_correspondent_landmarking.py --n-landmarks 100 --cpd-alpha 4.0` | `correspondence/<plane>/landmarks_all_samples.csv`, quality report |
 | 03 | `03_build_pca.py` | `pca/<plane>/pca_shape_model.npz`, explained variance, shape scores |
 | 04 | `04_fit_pca.py` | fitted landmarks + HD95 (on the training labels, for validation) |
-| 05 | `05_visualize_landmarks.py` | numbered landmarks on images (for choosing landmark indices) |
+| 05 | `05_visualize_landmarks.py` | numbered landmarks on images (for choosing landmark ins) |
 | 06 | `06_measure_vermis.py` | vermis height per image |
 | 07 | `07_create_vermis_statistics.py` | growth curves of vermis height vs. corrected (post-menstrual) age |
 
 If you change `--n-landmarks` or rebuild the model, check the landmark
-indices again with `05_visualize_landmarks.py`, because they depend on the
+ins again with `05_visualize_landmarks.py`, because they depend on the
 template.
 
 ---
@@ -461,7 +461,7 @@ F1 of the `mid_saggital` class (0.87) is the more informative number.
 
 | Metric | Mean ± SD | Median | Min | Max |
 |---|---|---|---|---|
-| Dice | 0.922 ± 0.079 | 0.933 | 0.126 | 0.996 |
+|  | 0.922 ± 0.079 | 0.933 | 0.126 | 0.996 |
 | IoU | 0.863 ± 0.098 | 0.875 | 0.067 | 0.993 |
 | Sensitivity | 0.923 ± 0.091 | 0.942 | 0.071 | 1.000 |
 | Specificity | 0.999 ± 0.001 | 0.999 | 0.996 | 1.000 |
@@ -471,14 +471,14 @@ F1 of the `mid_saggital` class (0.87) is the more informative number.
 
 | Metric | Mean ± SD | Median | Min | Max |
 |---|---|---|---|---|
-| Dice | 0.864 ± 0.173 | 0.905 | 0.000 | 0.993 |
+|  | 0.864 ± 0.173 | 0.905 | 0.000 | 0.993 |
 | IoU | 0.790 ± 0.205 | 0.826 | 0.000 | 0.986 |
 | Sensitivity | 0.861 ± 0.184 | 0.916 | 0.000 | 0.994 |
 | Specificity | 0.998 ± 0.002 | 0.999 | 0.989 | 1.000 |
 | Precision | 0.893 ± 0.103 | 0.925 | 0.667 | 0.994 |
 
 Precision is computed on 42 images: one image has an empty prediction
-(Dice 0), for which precision is undefined.
+(Dice 0) due to a corrupted ground truth mask, for which precision is undefined.
 
 ### 3. Vermis height
 
