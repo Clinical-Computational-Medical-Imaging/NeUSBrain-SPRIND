@@ -111,7 +111,7 @@ The trained models are too large for git and are archived on Zenodo with a DOI:
 
 DOI: 10.5281/zenodo.23400169 — NeUSBrain-SPRIND model weights, Apache-2.0. This DOI always resolves to the latest version; cite 10.5281/zenodo.23400170 to pin v1.0.0 exactly. Archived release: v1.0.0
 
-Download the four files from the Zenodo record and place them in models/ as in the table above:
+Download the five files from the Zenodo record and place them in models/ as in the table above:
 
 
 models/
@@ -291,11 +291,11 @@ Outputs in `--output`:
 |---|---|
 | `predictions/` | predicted label maps (`.nii.gz`) |
 | `overlays/` | PNGs, green = ground truth, red = prediction |
-| `prediction_statistics.csv` | , IoU, sensitivity, specificity, precision per image |
+| `prediction_statistics.csv` | Dice, IoU, sensitivity, specificity, precision per image |
 | `summary_statistics.csv` | mean / std / median / min / max per metric |
 | `processing_log.csv` | status of every image (success, skipped, error) |
 
- and IoU are set to 1 when both the mask and the prediction are empty.
+Dice and IoU are set to 1 when both the mask and the prediction are empty.
 Precision is undefined (and left out of the summary) when the prediction is
 empty.
 
@@ -411,12 +411,12 @@ cp -r outputs/ssm_work/pca/sagittal models/ssm/
 | 02 | `02_correspondent_landmarking.py --n-landmarks 100 --cpd-alpha 4.0` | `correspondence/<plane>/landmarks_all_samples.csv`, quality report |
 | 03 | `03_build_pca.py` | `pca/<plane>/pca_shape_model.npz`, explained variance, shape scores |
 | 04 | `04_fit_pca.py` | fitted landmarks + HD95 (on the training labels, for validation) |
-| 05 | `05_visualize_landmarks.py` | numbered landmarks on images (for choosing landmark ins) |
+| 05 | `05_visualize_landmarks.py` | numbered landmarks on images (for choosing landmark indices) |
 | 06 | `06_measure_vermis.py` | vermis height per image |
 | 07 | `07_create_vermis_statistics.py` | growth curves of vermis height vs. corrected (post-menstrual) age |
 
 If you change `--n-landmarks` or rebuild the model, check the landmark
-ins again with `05_visualize_landmarks.py`, because they depend on the
+indices again with `05_visualize_landmarks.py`, because they depend on the
 template.
 
 ---
@@ -461,7 +461,7 @@ F1 of the `mid_saggital` class (0.87) is the more informative number.
 
 | Metric | Mean ± SD | Median | Min | Max |
 |---|---|---|---|---|
-|  | 0.922 ± 0.079 | 0.933 | 0.126 | 0.996 |
+| Dice | 0.922 ± 0.079 | 0.933 | 0.126 | 0.996 |
 | IoU | 0.863 ± 0.098 | 0.875 | 0.067 | 0.993 |
 | Sensitivity | 0.923 ± 0.091 | 0.942 | 0.071 | 1.000 |
 | Specificity | 0.999 ± 0.001 | 0.999 | 0.996 | 1.000 |
@@ -471,7 +471,7 @@ F1 of the `mid_saggital` class (0.87) is the more informative number.
 
 | Metric | Mean ± SD | Median | Min | Max |
 |---|---|---|---|---|
-|  | 0.864 ± 0.173 | 0.905 | 0.000 | 0.993 |
+| Dice | 0.864 ± 0.173 | 0.905 | 0.000 | 0.993 |
 | IoU | 0.790 ± 0.205 | 0.826 | 0.000 | 0.986 |
 | Sensitivity | 0.861 ± 0.184 | 0.916 | 0.000 | 0.994 |
 | Specificity | 0.998 ± 0.002 | 0.999 | 0.989 | 1.000 |
