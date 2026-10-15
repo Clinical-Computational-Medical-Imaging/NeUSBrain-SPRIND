@@ -482,10 +482,7 @@ Precision is computed on 42 images: one image has an empty prediction
 
 ### 3. Vermis height
 
-> **TODO:** run `tests/run_cluster_evaluation.sh` (see [Testing](#testing))
-> and add the agreement between the vermis height measured on nnU-Net
-> segmentations and on ground-truth segmentations (bias, MAE, 95 % limits of
-> agreement).
+Real data. Agreement between the vermis height measured on nnU-Net segmentations and on ground-truth segmentations (bias, MAE, 95 % limits of agreement) is not yet reported here; tests/run_cluster_evaluation.sh runs that analysis on held-out data and writes it to outputs/evaluation_<date>/results.md. Reader agreement for the method is reported in the ECR 2027 abstract (96 images, 52 infants; ICC 0.90 and 0.92 against two blinded neonatologists, against 0.87 between the two readers).
 
 **Synthetic data** (`tests/smoke_test.py`): 15 synthetic vermis shapes with
 known height (11–15 mm, anisotropic spacing 0.12 × 0.10 mm). Over 10 random
