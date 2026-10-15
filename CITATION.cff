@@ -1,0 +1,69 @@
+cff-version: 1.2.0
+message: "If you use these models or this code, please cite the archived release below."
+title: "NeUSBrain-SPRIND: classification, segmentation and vermis-height models for neonatal cranial ultrasound"
+abstract: >-
+  Inference code and trained model weights for automated analysis of mid-sagittal neonatal cranial
+  ultrasound: usable-image classification, mid-sagittal plane classification, skull and
+  cerebellum/vermis segmentation (nnU-Net v2), and statistical-shape-model-based vermis height
+  measurement.
+type: software
+version: 1.0.0
+date-released: "2026-10-15"
+license: Apache-2.0
+repository-code: "https://github.com/Clinical-Computational-Medical-Imaging/NeUSBrain-SPRIND"
+# doi: 10.5281/zenodo.XXXXXXX      # <- the Zenodo concept DOI, once minted
+keywords:
+  - neonatal cranial ultrasound
+  - preterm brain
+  - segmentation
+  - statistical shape model
+  - nnU-Net
+authors:
+  - family-names: Reinke
+    given-names: Zoe
+    orcid: "https://orcid.org/0009-0009-8288-3508"
+    affiliation: "University Hospital Augsburg"
+  - family-names: "Gastreich de Llanes"
+    given-names: "Elina V."
+    affiliation: "University Hospital Augsburg"
+  - family-names: Karg
+    given-names: "Juliana V."
+    affiliation: "University Hospital Augsburg"
+  - family-names: "Tuechert-Knoll"
+    given-names: "Stefanie E."
+    orcid: "https://orcid.org/0000-0002-7952-1380"
+    affiliation: "University Hospital Augsburg"
+  - family-names: Laub
+    given-names: Florentine
+    affiliation: "University Hospital Augsburg"
+  - family-names: Langer
+    given-names: Valentin
+    affiliation: "University Hospital Augsburg"
+  - family-names: Fahlbusch
+    given-names: "Fabian B."
+    orcid: "https://orcid.org/0000-0001-5480-0204"
+    affiliation: "University of Augsburg and University Hospital Augsburg"
+  - family-names: Wendler
+    given-names: Thomas
+    orcid: "https://orcid.org/0000-0002-0915-0510"
+    affiliation: "University of Augsburg and University Hospital Augsburg"
+references:
+  - type: conference-paper
+    title: "Automated Skull Segmentation in Neonatal Cranial Ultrasound using Deep Learning"
+    doi: 10.1055/s-0046-1826334
+    year: 2026
+    authors:
+      - family-names: Reinke
+        given-names: Zoe
+      - family-names: "Gastreich de Llanes"
+        given-names: "Elina V."
+      - family-names: Karg
+        given-names: "Juliana V."
+      - family-names: "Tuechert-Knoll"
+        given-names: "Stefanie E."
+      - family-names: Laub
+        given-names: Florentine
+      - family-names: Wendler
+        given-names: Thomas
+      - family-names: Fahlbusch
+        given-names: "Fabian B."
