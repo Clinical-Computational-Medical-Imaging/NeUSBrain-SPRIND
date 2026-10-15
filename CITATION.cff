@@ -26,18 +26,18 @@ authors:
   - family-names: "Gastreich de Llanes"
     given-names: "Elina V."
     affiliation: "University Hospital Augsburg"
+  - family-names: Langer
+    given-names: Valentin
+    affiliation: "University Hospital Augsburg"
+  - family-names: Laub
+    given-names: Florentine
+    affiliation: "University Hospital Augsburg"
   - family-names: Karg
     given-names: "Juliana V."
     affiliation: "University Hospital Augsburg"
   - family-names: "Tuechert-Knoll"
     given-names: "Stefanie E."
     orcid: "https://orcid.org/0000-0002-7952-1380"
-    affiliation: "University Hospital Augsburg"
-  - family-names: Laub
-    given-names: Florentine
-    affiliation: "University Hospital Augsburg"
-  - family-names: Langer
-    given-names: Valentin
     affiliation: "University Hospital Augsburg"
   - family-names: Fahlbusch
     given-names: "Fabian B."
