@@ -11,7 +11,7 @@ version: 1.0.0
 date-released: "2026-10-15"
 license: Apache-2.0
 repository-code: "https://github.com/Clinical-Computational-Medical-Imaging/NeUSBrain-SPRIND"
-# doi: 10.5281/zenodo.XXXXXXX      # <- the Zenodo concept DOI, once minted
+doi: 10.5281/zenodo.23400169
 keywords:
   - neonatal cranial ultrasound
   - preterm brain
@@ -25,9 +25,11 @@ authors:
     affiliation: "University Hospital Augsburg"
   - family-names: "Gastreich de Llanes"
     given-names: "Elina Viktoria"
+    orcid: "https://orcid.org/0009-0000-1175-1641"
     affiliation: "University Hospital Augsburg"
   - family-names: "Langer"
     given-names: "Valentin"
+    orcid: "https://orcid.org/0009-0007-9840-604X"
     affiliation: "University Hospital Augsburg"
   - family-names: "Karg"
     given-names: "Julian Valentin"
