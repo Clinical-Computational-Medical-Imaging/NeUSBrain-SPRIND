@@ -4,18 +4,58 @@
   "license": "Apache-2.0",
   "version": "1.0.0",
   "creators": [
-    {"name": "Reinke, Zoe", "affiliation": "University Hospital Augsburg", "orcid": "0009-0009-8288-3508"},
-    {"name": "Gastreich de Llanes, Elina V.", "affiliation": "University Hospital Augsburg"},
-    {"name": "Langer, Valentin", "affiliation": "University Hospital Augsburg"},
-    {"name": "Laub, Florentine", "affiliation": "University Hospital Augsburg"},
-    {"name": "Karg, Juliana V.", "affiliation": "University Hospital Augsburg"},
-    {"name": "Tuechert-Knoll, Stefanie E.", "affiliation": "University Hospital Augsburg", "orcid": "0000-0002-7952-1380"},
-    {"name": "Fahlbusch, Fabian B.", "affiliation": "University of Augsburg and University Hospital Augsburg", "orcid": "0000-0001-5480-0204"},
-    {"name": "Wendler, Thomas", "affiliation": "University of Augsburg and University Hospital Augsburg", "orcid": "0000-0002-0915-0510"}
+    {
+      "name": "Reinke, Zoe",
+      "affiliation": "University Hospital Augsburg",
+      "orcid": "0009-0009-8288-3508"
+    },
+    {
+      "name": "Gastreich de Llanes, Elina Viktoria",
+      "affiliation": "University Hospital Augsburg"
+    },
+    {
+      "name": "Langer, Valentin",
+      "affiliation": "University Hospital Augsburg"
+    },
+    {
+      "name": "Karg, Julian Valentin",
+      "affiliation": "University Hospital Augsburg"
+    },
+    {
+      "name": "Laub, Florentine",
+      "affiliation": "University Hospital Augsburg"
+    },
+    {
+      "name": "Tüchert-Knoll, Stefanie Eliane",
+      "affiliation": "University Hospital Augsburg",
+      "orcid": "0000-0002-7952-1380"
+    },
+    {
+      "name": "Fahlbusch, Fabian Benedikt",
+      "affiliation": "University of Augsburg and University Hospital Augsburg",
+      "orcid": "0000-0001-5480-0204"
+    },
+    {
+      "name": "Wendler, Thomas",
+      "affiliation": "University of Augsburg and University Hospital Augsburg",
+      "orcid": "0000-0002-0915-0510"
+    }
   ],
   "related_identifiers": [
-    {"identifier": "https://github.com/Clinical-Computational-Medical-Imaging/NeUSBrain-SPRIND/tree/v1.0.0",
-     "relation": "isSupplementTo", "scheme": "url"},
-    {"identifier": "10.1055/s-0046-1826334", "relation": "isSupplementTo", "scheme": "doi"}
+    {
+      "identifier": "https://github.com/Clinical-Computational-Medical-Imaging/NeUSBrain-SPRIND/tree/v1.0.0",
+      "relation": "isSupplementTo",
+      "scheme": "url"
+    },
+    {
+      "identifier": "10.1055/s-0046-1826334",
+      "relation": "isSupplementTo",
+      "scheme": "doi"
+    },
+    {
+      "identifier": "10.1515/cdbme-2026-0140",
+      "relation": "isSupplementTo",
+      "scheme": "doi"
+    }
   ]
 }
