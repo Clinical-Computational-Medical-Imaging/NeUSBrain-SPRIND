@@ -4,7 +4,7 @@ NeUSBrain – 3D brain norms from newborn ultrasound.
 
 This repository contains our submission for automatically measuring the
 **vermis height** in **mid-sagittal neonatal cranial ultrasound (NeUS)
-images**. The pipeline has three stages:
+images**. It consolidates the work of our team over the last 2 years. The pipeline has three stages:
 
 1. **Classify**: find usable images and the mid-sagittal plane (CNN classifiers).
 2. **Segment**: segment the skull and the cerebellum/vermis (nnU-Net v2, 2D).
